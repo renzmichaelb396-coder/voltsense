@@ -22,7 +22,7 @@ server.on('error', (error: Error) => {
   process.exitCode = 1;
 });
 
-startOcppWsListener(ACTIVE_HARDWARE_CONFIG)
+startOcppWsListener(db, ACTIVE_HARDWARE_CONFIG)
   .then(() => {
     console.log(
       `[voltsense:ocpp] WebSocket listener active on port ${ACTIVE_HARDWARE_CONFIG.wsPort}`,

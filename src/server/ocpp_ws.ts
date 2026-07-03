@@ -1,8 +1,10 @@
 // VoltSense OCPP 1.6J WebSocket listener bootstrap.
 //
-// Binds the bench WebSocket port from ACTIVE_HARDWARE_CONFIG (default 8080) and
-// dispatches inbound connections on the hardware test-state discriminated union
-// (mock_harness vs physical_hardware) via the config's own type guards.
+// Binds the bench WebSocket port from ACTIVE_HARDWARE_CONFIG (default 8080).
+// Each connection is identified by the last URL path segment (chargePointId)
+// and gets its own real OcppConnection state machine — mock_harness vs
+// physical_hardware (config.testState) only changes handshake auth, not
+// protocol handling.
 //
 // Security boundary (Law §10):
 //   - §10.1 routing: physical_hardware mode is port-locked to 8080
@@ -21,6 +23,7 @@
 
 import type { IncomingMessage } from 'node:http';
 
+import { eq } from 'drizzle-orm';
 import {
   WebSocketServer,
   WebSocket,
@@ -28,6 +31,7 @@ import {
   type VerifyClientCallbackAsync,
 } from 'ws';
 
+import * as schema from '../db/schema.js';
 import {
   ACTIVE_HARDWARE_CONFIG,
   assertPhysicalHardwarePortLock,
@@ -37,10 +41,17 @@ import {
   type OcppHardwareConfig,
 } from '../protocols/ocpp/hardware_config.js';
 import {
+  OcppConnection,
+  type ChargePointRegistryLookup,
+  type ChargePointRegistryStatus,
+} from '../protocols/ocpp/ocpp_connection.js';
+import {
   OCPP_SECURITY_PROFILE_ID,
   validateHandshakeCredentials,
   type OcppHandshakeCredentials,
 } from '../protocols/ocpp/security_profiles.js';
+import type { RemoteStartTransactionReq } from '../protocols/ocpp/types.js';
+import type { SettlementDb } from '../services/settlement.js';
 
 // OCPP 1.6 subprotocol token offered on the `Sec-WebSocket-Protocol` header.
 const OCPP_SUBPROTOCOL = 'ocpp1.6' as const;
@@ -121,70 +132,132 @@ function authorizePhysicalHandshake(req: IncomingMessage): boolean {
   }
 }
 
-// ─── Frame boundary — RawData in, 'unknown' out ──────────────────────────────
+// ─── Frame boundary — RawData in, text out ────────────────────────────────────
+// OcppConnection.onRawFrame does its own JSON parsing/validation; the WS layer
+// only needs to normalize the wire payload down to a UTF-8 string.
 
-function decodeFrame(data: RawData): unknown {
-  const text = Array.isArray(data)
+function rawDataToText(data: RawData): string {
+  return Array.isArray(data)
     ? Buffer.concat(data).toString('utf8')
     : data instanceof ArrayBuffer
       ? Buffer.from(data).toString('utf8')
       : data.toString('utf8');
-
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    // Malformed/non-JSON frame: stays opaque, never coerced.
-    return undefined;
-  }
 }
 
-// ─── Inbound dispatch keyed on the hardware test-state union ──────────────────
+// ─── chargePointId extraction ─────────────────────────────────────────────────
+// OCPP 1.6J convention: the charge point identity is the last path segment of
+// the WebSocket URL, e.g. wss://host/ocpp/{chargePointId}.
 
-function handleInboundFrame(
+function extractChargePointId(req: IncomingMessage): string | null {
+  const url = new URL(req.url ?? '/', 'http://internal');
+  const segments = url.pathname.split('/').filter((segment) => segment.length > 0);
+  const last = segments[segments.length - 1];
+  return last !== undefined && last.length > 0 ? decodeURIComponent(last) : null;
+}
+
+// ─── DB-backed registry lookup ─────────────────────────────────────────────────
+// §1.1.3 step 2 requires 'provisioned' to accept BootNotification. Resolved once
+// per connection (not per-frame) since ChargePointRegistryLookup is synchronous.
+
+async function lookupChargePointRegistryStatus(
+  db: SettlementDb,
+  chargePointId: string,
+): Promise<ChargePointRegistryStatus> {
+  const rows = await db
+    .select({ status: schema.chargePoints.status })
+    .from(schema.chargePoints)
+    .where(eq(schema.chargePoints.id, chargePointId))
+    .limit(1);
+
+  const row = rows[0];
+  if (row === undefined) {
+    return 'not_found';
+  }
+  if (row.status === 'decommissioned') {
+    return 'decommissioned';
+  }
+  if (row.status === 'provisioned') {
+    return 'provisioned';
+  }
+  return 'rejected';
+}
+
+// ─── Live connection registry ─────────────────────────────────────────────────
+// chargePointId → its active OcppConnection, so CSMS-originated calls (e.g.
+// RemoteStartTransaction) can reach the right socket.
+
+const liveConnections: Map<string, OcppConnection> = new Map();
+
+// ─── Per-socket wiring ─────────────────────────────────────────────────────────
+
+async function handleConnection(
   socket: WebSocket,
-  state: HardwareTestState,
-  frame: unknown,
-): void {
-  if (isMockHarnessState(state)) {
-    socket.send(
-      JSON.stringify({
-        ack: 'mock_harness',
-        charger: state.simulatedChargerId,
-        decoded: frame !== undefined,
-      }),
-    );
-    return;
-  }
+  chargePointId: string,
+  db: SettlementDb,
+): Promise<void> {
+  const registryStatus = await lookupChargePointRegistryStatus(db, chargePointId);
+  const registryLookup: ChargePointRegistryLookup = () => registryStatus;
 
-  if (isPhysicalHardwareState(state)) {
-    socket.send(
-      JSON.stringify({
-        ack: 'physical_hardware',
-        charger: state.activeChargerId,
-        firmware: state.firmwareVersion,
-        decoded: frame !== undefined,
-      }),
-    );
-    return;
-  }
+  const connection = new OcppConnection(
+    chargePointId,
+    (frame: string) => { socket.send(frame); },
+    registryLookup,
+    db,
+  );
 
-  const unreachable: never = state;
-  throw new Error(`[voltsense:ocpp] unhandled hardware state: ${String(unreachable)}`);
+  liveConnections.set(chargePointId, connection);
+  connection.onOpen();
+
+  socket.on('message', (data: RawData) => {
+    const response = connection.onRawFrame(rawDataToText(data));
+    if (response !== null) {
+      socket.send(response);
+    }
+  });
+
+  socket.on('close', () => {
+    connection.onClose();
+    if (liveConnections.get(chargePointId) === connection) {
+      liveConnections.delete(chargePointId);
+    }
+    console.log(`[voltsense:ocpp] charge point ${chargePointId} disconnected`);
+  });
+
+  socket.on('error', (error: Error) => {
+    console.error(`[voltsense:ocpp] socket error for ${chargePointId}: ${error.message}`);
+  });
 }
 
-// ─── Outbound RemoteStartTransaction (stub) ───────────────────────────────────
-// Called once a session's payment clears. Live connections aren't tracked by
-// chargePointId yet, so this logs intent only — swap in a real sendCall() once
-// the WebSocket listener keeps a chargePointId → OcppConnection registry.
+// ─── Outbound RemoteStartTransaction ───────────────────────────────────────────
+// Called once a session's payment clears (handlePayMongoWebhook). Looks up the
+// charge point's live connection and sends the real OCPP Call; never throws —
+// callers get a best-effort dispatch and read the outcome from logs.
 
 export async function sendRemoteStartTransaction(
   chargePointId: string,
   connectorId: number,
   idTag: string,
 ): Promise<void> {
-  console.log(
-    `[voltsense:ocpp] RemoteStartTransaction intent — chargePointId=${chargePointId} connectorId=${connectorId} idTag=${idTag} (stub: not yet wired to a live OCPP connection)`,
-  );
+  const connection = liveConnections.get(chargePointId);
+  if (connection === undefined) {
+    console.error(
+      `[voltsense:ocpp] RemoteStartTransaction failed — no live connection for chargePointId=${chargePointId}`,
+    );
+    return;
+  }
+
+  const payload: RemoteStartTransactionReq = { connectorId, idTag };
+
+  try {
+    const result = await connection.sendCall('RemoteStartTransaction', payload);
+    console.log(
+      `[voltsense:ocpp] RemoteStartTransaction.conf chargePointId=${chargePointId} connectorId=${connectorId} idTag=${idTag} result=${JSON.stringify(result)}`,
+    );
+  } catch (err) {
+    console.error(
+      `[voltsense:ocpp] RemoteStartTransaction failed chargePointId=${chargePointId}: ${err instanceof Error ? err.message : JSON.stringify(err)}`,
+    );
+  }
 }
 
 // ─── Listener handle ─────────────────────────────────────────────────────────
@@ -195,6 +268,7 @@ export type OcppWsListener = {
 };
 
 export async function startOcppWsListener(
+  db: SettlementDb,
   config: OcppHardwareConfig = ACTIVE_HARDWARE_CONFIG,
 ): Promise<OcppWsListener> {
   // §10.1 routing invariant — a live BESEN station may only bind port 8080.
@@ -240,15 +314,21 @@ export async function startOcppWsListener(
 
   wss.on('connection', (socket: WebSocket, request) => {
     const peer = request.socket.remoteAddress ?? 'unknown';
-    console.log(`[voltsense:ocpp] charge point connected from ${peer}`);
+    const chargePointId = extractChargePointId(request);
 
-    socket.on('message', (data: RawData) => {
-      const frame: unknown = decodeFrame(data);
-      handleInboundFrame(socket, config.testState, frame);
-    });
+    if (chargePointId === null) {
+      console.error(`[voltsense:ocpp] connection rejected from ${peer} — no chargePointId in path`);
+      socket.close(1008, 'chargePointId required in connection path');
+      return;
+    }
 
-    socket.on('error', (error: Error) => {
-      console.error(`[voltsense:ocpp] socket error from ${peer}: ${error.message}`);
+    console.log(`[voltsense:ocpp] charge point ${chargePointId} connected from ${peer}`);
+
+    void handleConnection(socket, chargePointId, db).catch((error: unknown) => {
+      console.error(
+        `[voltsense:ocpp] failed to initialize connection for ${chargePointId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      socket.close(1011, 'Internal error');
     });
   });
 
