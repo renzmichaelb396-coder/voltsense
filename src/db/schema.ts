@@ -52,7 +52,7 @@ export const packageIdEnum = pgEnum('package_id', [
   'PKG_FULL',
 ]);
 
-export const pspEnum = pgEnum('psp', ['gcash', 'maya']);
+export const pspEnum = pgEnum('psp', ['gcash', 'maya', 'paymongo']);
 
 export const paymentStatusEnum = pgEnum('payment_status', [
   'pending',

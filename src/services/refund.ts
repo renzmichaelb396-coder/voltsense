@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 
-import { payMongoBasicAuthHeader, phpStringToCentavos } from './paymongo.js';
+import { loadPayMongoConfigFromEnv, payMongoBasicAuthHeader, phpStringToCentavos } from './paymongo.js';
 import type { Psp } from '../webhooks/types.js';
 
 // ─── PSP config ───────────────────────────────────────────────────────────────
@@ -19,6 +19,17 @@ export type PspConfig = {
 export type RefundConfig = {
   readonly paymongo: PspConfig;
 };
+
+export function loadRefundConfigFromEnv(): RefundConfig {
+  const paymongo = loadPayMongoConfigFromEnv();
+  return {
+    paymongo: {
+      apiKey: paymongo.secretKey,
+      baseUrl: paymongo.baseUrl,
+      timeoutMs: paymongo.timeoutMs,
+    },
+  };
+}
 
 // ─── Request ──────────────────────────────────────────────────────────────────
 

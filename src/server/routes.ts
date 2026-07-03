@@ -5,11 +5,21 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http';
 
+import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 
+import * as schema from '../db/schema.js';
 import { createPaymentLink, loadPayMongoConfigFromEnv } from '../services/paymongo.js';
+import { loadRefundConfigFromEnv } from '../services/refund.js';
+import {
+  executeRevenueSplitOrRefund,
+  type SettlementDb,
+  type SettlementWithRefundResult,
+} from '../services/settlement.js';
 import { verifyPayMongoWebhookSignature } from '../webhooks/crypto.js';
 import {
+  isPayMongoFailedEvent,
+  isPayMongoPaidEvent,
   normalizePayMongoWebhook,
   safeParsePayMongoWebhookPayload,
 } from '../webhooks/paymongo_types.js';
@@ -31,6 +41,7 @@ export type RequestContext = {
   readonly pathname: string;
   readonly headers: IncomingHttpHeaders;
   readonly rawBody: string;
+  readonly db: SettlementDb;
 };
 
 export type RouteDefinition = {
@@ -140,7 +151,55 @@ function readPayMongoSignatureHeader(headers: IncomingHttpHeaders): string | nul
   return null;
 }
 
-function handlePayMongoWebhook(ctx: RequestContext): HttpResponse {
+type SessionRow = typeof schema.sessions.$inferSelect;
+type PaymentRow = typeof schema.payments.$inferSelect;
+
+type SessionPaymentMatch = {
+  readonly session: SessionRow;
+  readonly payment: PaymentRow;
+};
+
+// PayMongo link reference_number is persisted as payments.idempotency_key at session create.
+async function findSessionPaymentByReferenceNumber(
+  db: SettlementDb,
+  referenceNumber: string,
+): Promise<SessionPaymentMatch | undefined> {
+  const joined = await db
+    .select({
+      session: schema.sessions,
+      payment: schema.payments,
+    })
+    .from(schema.payments)
+    .innerJoin(schema.sessions, eq(schema.payments.sessionId, schema.sessions.id))
+    .where(eq(schema.payments.idempotencyKey, referenceNumber))
+    .limit(1);
+
+  const row = joined[0];
+  if (row === undefined) {
+    return undefined;
+  }
+
+  return { session: row.session, payment: row.payment };
+}
+
+async function resolveStationId(
+  db: SettlementDb,
+  chargePointId: string,
+): Promise<string | undefined> {
+  const rows = await db
+    .select({ siteId: schema.chargePoints.siteId })
+    .from(schema.chargePoints)
+    .where(eq(schema.chargePoints.id, chargePointId))
+    .limit(1);
+
+  return rows[0]?.siteId;
+}
+
+function logSettlementOutcome(result: SettlementWithRefundResult): void {
+  console.log('[voltsense:paymongo-webhook] settlement outcome', JSON.stringify(result));
+}
+
+async function handlePayMongoWebhook(ctx: RequestContext): Promise<HttpResponse> {
   const secret = loadPayMongoWebhookSecret();
   if (secret === null) {
     return jsonResponse(500, { accepted: false, error: 'paymongo_webhook_secret_not_configured' });
@@ -163,12 +222,109 @@ function handlePayMongoWebhook(ctx: RequestContext): HttpResponse {
   }
 
   const event = normalizePayMongoWebhook(parsed.data);
-  return jsonResponse(202, {
-    accepted: true,
-    psp: 'paymongo',
-    event: event.event,
-    payment_id: event.paymentId,
-  });
+
+  if (event.externalReferenceNumber === null) {
+    return jsonResponse(202, {
+      accepted: true,
+      psp: 'paymongo',
+      error: 'session_not_found',
+    });
+  }
+
+  const match = await findSessionPaymentByReferenceNumber(
+    ctx.db,
+    event.externalReferenceNumber,
+  );
+  if (match === undefined) {
+    return jsonResponse(202, {
+      accepted: true,
+      psp: 'paymongo',
+      error: 'session_not_found',
+    });
+  }
+
+  const { session, payment } = match;
+
+  if (isPayMongoPaidEvent(event)) {
+    await ctx.db
+      .update(schema.payments)
+      .set({
+        status: 'paid',
+        externalId: event.paymentId,
+        paidAt: new Date(event.paidAtUnix * 1000),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.payments.id, payment.id));
+
+    const stationId = await resolveStationId(ctx.db, session.chargePointId);
+    if (stationId === undefined) {
+      console.error(
+        `[voltsense:paymongo-webhook] charge point not found: chargePointId=${session.chargePointId}`,
+      );
+      return jsonResponse(202, {
+        accepted: true,
+        psp: 'paymongo',
+        event: event.event,
+        payment_id: event.paymentId,
+        error: 'station_not_found',
+      });
+    }
+
+    let refundConfig;
+    try {
+      refundConfig = loadRefundConfigFromEnv();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'paymongo_not_configured';
+      console.error(`[voltsense:paymongo-webhook] refund config error: ${message}`);
+      return jsonResponse(202, {
+        accepted: true,
+        psp: 'paymongo',
+        event: event.event,
+        payment_id: event.paymentId,
+        error: 'paymongo_not_configured',
+      });
+    }
+
+    const settlementResult = await executeRevenueSplitOrRefund({
+      db: ctx.db,
+      paymentId: payment.id,
+      totalAmount: payment.amountPhp,
+      stationId,
+      psp: 'paymongo',
+      externalId: event.paymentId,
+      refundConfig,
+    });
+
+    logSettlementOutcome(settlementResult);
+
+    return jsonResponse(202, {
+      accepted: true,
+      psp: 'paymongo',
+      event: event.event,
+      payment_id: event.paymentId,
+      settlement_status: settlementResult.status,
+    });
+  }
+
+  if (isPayMongoFailedEvent(event)) {
+    await ctx.db
+      .update(schema.payments)
+      .set({
+        status: 'failed',
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.payments.id, payment.id));
+
+    return jsonResponse(202, {
+      accepted: true,
+      psp: 'paymongo',
+      event: event.event,
+      payment_id: event.paymentId,
+    });
+  }
+
+  const unhandledEvent: never = event;
+  throw new Error(`[voltsense:paymongo-webhook] Unhandled event: ${String(unhandledEvent)}`);
 }
 
 const CreatePaymentRequestSchema = z.object({
@@ -176,8 +332,8 @@ const CreatePaymentRequestSchema = z.object({
     .string()
     .regex(/^\d+(\.\d{1,6})?$/, 'amount_php must be a positive decimal string'),
   description: z.string().min(1).max(255),
-  session_id: z.string().uuid().optional(),
-  reference_number: z.string().min(1).max(64).optional(),
+  session_id: z.string().uuid(),
+  reference_number: z.string().min(1).max(64),
   remarks: z.string().max(255).optional(),
 });
 
@@ -196,18 +352,23 @@ async function handleCreatePayment(ctx: RequestContext): Promise<HttpResponse> {
 
   const { amount_php, description, session_id, reference_number, remarks } = bodyParsed.data;
 
-  const metadata: Record<string, string> = {};
-  if (session_id !== undefined) {
-    metadata['session_id'] = session_id;
+  const sessionRows = await ctx.db
+    .select({ id: schema.sessions.id })
+    .from(schema.sessions)
+    .where(eq(schema.sessions.id, session_id))
+    .limit(1);
+
+  if (sessionRows[0] === undefined) {
+    return jsonResponse(404, { error: 'session_not_found' });
   }
 
   const result = await createPaymentLink(
     {
       amountPhp: amount_php,
       description,
-      ...(reference_number !== undefined ? { referenceNumber: reference_number } : {}),
+      referenceNumber: reference_number,
       ...(remarks !== undefined ? { remarks } : {}),
-      ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+      metadata: { session_id },
     },
     paymongoConfig,
   );
@@ -220,12 +381,29 @@ async function handleCreatePayment(ctx: RequestContext): Promise<HttpResponse> {
     });
   }
 
+  const insertedRows = await ctx.db
+    .insert(schema.payments)
+    .values({
+      sessionId: session_id,
+      psp: 'paymongo',
+      externalId: result.linkId,
+      idempotencyKey: reference_number,
+      amountPhp: amount_php,
+      status: 'pending',
+      rawPayload: { link_id: result.linkId, _url: result.checkoutUrl },
+    })
+    .returning({ id: schema.payments.id });
+
+  const payment = insertedRows[0];
+  if (payment === undefined) {
+    throw new Error('[voltsense:create-payment] payments insert returned no row');
+  }
+
   return jsonResponse(201, {
+    payment_id: payment.id,
     checkout_url: result.checkoutUrl,
     link_id: result.linkId,
-    ...(result.referenceNumber !== null
-      ? { reference_number: result.referenceNumber }
-      : {}),
+    reference_number,
     amount_centavos: result.amountCentavos,
   });
 }

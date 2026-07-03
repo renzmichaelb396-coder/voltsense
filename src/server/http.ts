@@ -9,6 +9,7 @@ import {
   verifyBasicAuth,
   type ShieldCredentials,
 } from './basic_auth.js';
+import type { SettlementDb } from '../services/settlement.js';
 import {
   dispatchRoute,
   readRequestBody,
@@ -76,6 +77,7 @@ export type HttpServerOptions = {
   readonly port: number;
   readonly host: string;
   readonly credentials: ShieldCredentials;
+  readonly db: SettlementDb;
 };
 
 export function createVoltSenseHttpServer(options: HttpServerOptions) {
@@ -101,6 +103,7 @@ export function createVoltSenseHttpServer(options: HttpServerOptions) {
         pathname,
         headers: req.headers,
         rawBody,
+        db: options.db,
       });
       writeHttpResponse(res, response);
     } catch (error: unknown) {
@@ -113,10 +116,10 @@ export function createVoltSenseHttpServer(options: HttpServerOptions) {
   return server.listen(options.port, options.host);
 }
 
-export function startHttpServerFromEnv(): ReturnType<typeof createVoltSenseHttpServer> {
+export function startHttpServerFromEnv(db: SettlementDb): ReturnType<typeof createVoltSenseHttpServer> {
   const port = Number(process.env['PORT'] ?? '3000');
   const host = process.env['HOST'] ?? '0.0.0.0';
   const credentials = loadShieldCredentialsFromEnv();
 
-  return createVoltSenseHttpServer({ port, host, credentials });
+  return createVoltSenseHttpServer({ port, host, credentials, db });
 }

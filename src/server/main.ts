@@ -1,11 +1,13 @@
 // Process entrypoint — boots the VoltSense HTTP server with shield credentials from env,
 // alongside the OCPP 1.6J WebSocket listener (bench port from ACTIVE_HARDWARE_CONFIG).
 
+import { loadDbFromEnv } from '../db/client.js';
 import { startHttpServerFromEnv } from './http.js';
 import { startOcppWsListener } from './ocpp_ws.js';
 import { ACTIVE_HARDWARE_CONFIG } from '../protocols/ocpp/hardware_config.js';
 
-const server = startHttpServerFromEnv();
+const db = loadDbFromEnv();
+const server = startHttpServerFromEnv(db);
 
 server.on('listening', () => {
   const address = server.address();

@@ -8,10 +8,10 @@ import { z } from 'zod';
 // Exported for use across services (refund.ts, settlement.ts) without re-deriving
 // from Zod schemas or schema.ts enum. Single source of truth.
 
-export type Psp = 'gcash' | 'maya';
+export type Psp = 'gcash' | 'maya' | 'paymongo';
 
 // Wire-level PSP validator. Inferred type is exactly `Psp` (closed set, no widening).
-const PspEnum = z.enum(['gcash', 'maya']);
+const PspEnum = z.enum(['gcash', 'maya', 'paymongo']);
 
 // ─── Amount string validator ───────────────────────────────────────────────────
 // Enforces string decimal (§1.4.7: "API JSON money fields → string decimal").

@@ -19,8 +19,9 @@
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
-    "drizzle-orm": "^0.41.0",
     "decimal.js": "^10.4.3",
+    "drizzle-orm": "^0.41.0",
+    "postgres": "^3.4.9",
     "ws": "^8.18.0",
     "zod": "^3.23.8"
   },
