@@ -23,7 +23,7 @@
 
 import type { IncomingMessage } from 'node:http';
 
-import { eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import {
   WebSocketServer,
   WebSocket,
@@ -188,6 +188,59 @@ async function lookupChargePointRegistryStatus(
 
 const liveConnections: Map<string, OcppConnection> = new Map();
 
+// Set once by startOcppWsListener — sendRemoteStartTransaction needs DB access
+// to flag a session as offline, but (like routes.ts's call site) doesn't carry
+// a sessionId, only chargePointId/idTag, so it re-derives the session itself.
+let activeDb: SettlementDb | undefined;
+
+// ─── Offline fallback ──────────────────────────────────────────────────────────
+// No live connection to dispatch RemoteStartTransaction to. Flag the session so
+// the BootNotification retry sweep (ocpp_connection.ts) picks it up on reconnect,
+// and so ops has a queryable state instead of a silently dropped request.
+
+async function markSessionChargerOffline(chargePointId: string, idTag: string): Promise<void> {
+  if (activeDb === undefined) {
+    return;
+  }
+  const db = activeDb;
+
+  try {
+    const rows = await db
+      .select({ id: schema.sessions.id })
+      .from(schema.sessions)
+      .where(
+        and(
+          eq(schema.sessions.chargePointId, chargePointId),
+          eq(schema.sessions.idTag, idTag),
+          eq(schema.sessions.status, 'payment_cleared'),
+        ),
+      )
+      .orderBy(desc(schema.sessions.paymentClearedAt))
+      .limit(1);
+
+    const session = rows[0];
+    if (session === undefined) {
+      console.warn(
+        `[voltsense:ocpp] no payment_cleared session found to flag offline: chargePointId=${chargePointId} idTag=${idTag}`,
+      );
+      return;
+    }
+
+    await db
+      .update(schema.sessions)
+      .set({ status: 'paid_charger_offline', updatedAt: new Date() })
+      .where(eq(schema.sessions.id, session.id));
+
+    console.log(
+      `[voltsense:ocpp] session flagged paid_charger_offline: sessionId=${session.id} chargePointId=${chargePointId}`,
+    );
+  } catch (err) {
+    console.error(
+      `[voltsense:ocpp] failed to flag session paid_charger_offline: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 // ─── Per-socket wiring ─────────────────────────────────────────────────────────
 
 async function handleConnection(
@@ -243,6 +296,7 @@ export async function sendRemoteStartTransaction(
     console.error(
       `[voltsense:ocpp] RemoteStartTransaction failed — no live connection for chargePointId=${chargePointId}`,
     );
+    await markSessionChargerOffline(chargePointId, idTag);
     return;
   }
 
@@ -271,6 +325,8 @@ export async function startOcppWsListener(
   db: SettlementDb,
   config: OcppHardwareConfig = ACTIVE_HARDWARE_CONFIG,
 ): Promise<OcppWsListener> {
+  activeDb = db;
+
   // §10.1 routing invariant — a live BESEN station may only bind port 8080.
   assertPhysicalHardwarePortLock(config);
 

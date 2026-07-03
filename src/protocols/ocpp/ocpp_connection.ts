@@ -2,7 +2,7 @@
 // Inspector rule: action: string or payload: any in this file = P0 weld violation.
 
 import { Decimal } from 'decimal.js';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray } from 'drizzle-orm';
 
 import * as schema from '../../db/schema.js';
 import { executeRevenueSplitOrRefund, type SettlementDb } from '../../services/settlement.js';
@@ -22,6 +22,7 @@ import {
   type CallResultPayload,
   type BootNotificationPayload,
   type BootNotificationConf,
+  type RemoteStartTransactionReq,
   isOcppAction,
   isOcppErrorCode,
   isParseError,
@@ -29,6 +30,8 @@ import {
   MESSAGE_TYPE_CALL_RESULT,
   MESSAGE_TYPE_CALL_ERROR,
 } from './types.js';
+
+type SessionRow = typeof schema.sessions.$inferSelect;
 
 // ─── Registry lookup contract ─────────────────────────────────────────────────
 // Injected at construction; decouples the connection class from DB internals.
@@ -88,6 +91,30 @@ function isStopTransactionPayload(value: unknown): value is StopTransactionPaylo
     typeof v['meterStop'] === 'number' &&
     typeof v['timestamp'] === 'string'
   );
+}
+
+// ─── sendCall outcome formatting ───────────────────────────────────────────────
+// Used to log BootNotification-retry results without leaking 'unknown' shapes.
+
+function isOcppCallError(value: unknown): value is OcppCallError {
+  return typeof value === 'object' && value !== null && (value as { kind?: unknown }).kind === 'call_error';
+}
+
+function extractRemoteStartStatus(result: unknown): string {
+  if (typeof result === 'object' && result !== null && 'status' in result) {
+    const status = (result as Record<string, unknown>)['status'];
+    if (typeof status === 'string') {
+      return status;
+    }
+  }
+  return 'unknown';
+}
+
+function describeSendCallFailure(err: unknown): string {
+  if (isOcppCallError(err)) {
+    return err.errorDescription.includes('TTL expired') ? 'timeout' : `error(${err.errorCode})`;
+  }
+  return err instanceof Error ? `error(${err.message})` : 'error(unknown)';
 }
 
 // ─── parseInboundFrame ────────────────────────────────────────────────────────
@@ -389,6 +416,10 @@ export class OcppConnection {
     this.state = 'BOOT_ACCEPTED';
     this.state = 'OPERATIONAL';
 
+    // Fire-and-forget: resumes any sessions that paid while this charge point
+    // was offline. Must never delay or alter the BootNotification.conf below.
+    this.retryPendingSessionsForReconnect();
+
     const conf: BootNotificationConf = {
       status: 'Accepted',
       currentTime: new Date().toISOString(),
@@ -399,6 +430,67 @@ export class OcppConnection {
 
   private handleHeartbeat(msg: OcppCall): string {
     return buildCallResultFrame(msg.messageId, { currentTime: new Date().toISOString() });
+  }
+
+  // ─── BootNotification retry — resume paid sessions on reconnect ───────────
+  // If a guest paid while this charge point was offline, sendRemoteStartTransaction
+  // (ocpp_ws.ts) never reached it. Catch those sessions here instead of leaving
+  // them stuck. No db injected (e.g. the simulation harness) → nothing to resume.
+
+  private retryPendingSessionsForReconnect(): void {
+    if (this.db === undefined) {
+      return;
+    }
+    const db = this.db;
+    void this.resumePendingSessions(db).catch((err: unknown) => {
+      console.error(
+        `[voltsense:ocpp] BootNotification retry sweep failed for chargePointId=${this.chargePointId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  }
+
+  private async resumePendingSessions(db: SettlementDb): Promise<void> {
+    const rows = await db
+      .select()
+      .from(schema.sessions)
+      .where(
+        and(
+          eq(schema.sessions.chargePointId, this.chargePointId),
+          // Includes 'paid_charger_offline' (set by sendRemoteStartTransaction
+          // when this charge point was unreachable) so reconnect actually
+          // catches those sessions, not just fresh 'payment_cleared' ones.
+          inArray(schema.sessions.status, ['payment_cleared', 'paid_charger_offline']),
+          gt(schema.sessions.authExpiresAt, new Date()),
+        ),
+      )
+      .orderBy(asc(schema.sessions.paymentClearedAt))
+      .limit(5);
+
+    for (const session of rows) {
+      // Sequential, not parallel — keeps retry order stable and avoids bursting
+      // RemoteStartTransaction calls at a charge point the instant it reconnects.
+      await this.retryRemoteStart(session);
+    }
+  }
+
+  private async retryRemoteStart(session: SessionRow): Promise<void> {
+    const payload: RemoteStartTransactionReq = {
+      connectorId: session.connectorId,
+      idTag: session.idTag,
+    };
+
+    try {
+      const result = await this.sendCall('RemoteStartTransaction', payload);
+      console.log(
+        `[voltsense:ocpp] BootNotification retry sessionId=${session.id} chargePointId=${this.chargePointId} outcome=${extractRemoteStartStatus(result)}`,
+      );
+    } catch (err) {
+      // The charge point just booted — a retry failure must never tear down
+      // the connection or propagate past this method.
+      console.error(
+        `[voltsense:ocpp] BootNotification retry sessionId=${session.id} chargePointId=${this.chargePointId} outcome=${describeSendCallFailure(err)}`,
+      );
+    }
   }
 
   // ─── StartTransaction session correlation (fire-and-forget) ───────────────
