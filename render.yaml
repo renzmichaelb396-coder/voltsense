@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: voltsense-csms
+    runtime: node
+    buildCommand: npm install && npm run build:emit
+    startCommand: node dist/server/main.js
+    healthCheckPath: /
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: PAYMONGO_SECRET_KEY
+        sync: false
+      - key: PAYMONGO_WEBHOOK_SECRET
+        sync: false
+      - key: VOLTSENSE_SHIELD_USER
+        sync: false
+      - key: VOLTSENSE_SHIELD_PASSWORD
+        sync: false
