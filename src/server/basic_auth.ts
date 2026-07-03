@@ -88,6 +88,12 @@ export function loadShieldCredentialsFromEnv(): ShieldCredentials {
   if (password === undefined || password.length === 0) {
     throw new Error('[SHIELD] VOLTSENSE_SHIELD_PASSWORD must be set');
   }
+  if (password === 'change-me') {
+    throw new Error(
+      '[SHIELD] VOLTSENSE_SHIELD_PASSWORD must be set to a strong secret — ' +
+        'the default placeholder "change-me" is not permitted',
+    );
+  }
 
   return { username, password };
 }

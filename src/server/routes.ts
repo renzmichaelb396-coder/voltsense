@@ -1,6 +1,7 @@
 // Typed HTTP route table — public landing at GET /; admin/dev shielded via Basic Auth.
 // Webhook listeners use the 'webhook' auth tier (HMAC validation on PayMongo).
 
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http';
@@ -224,6 +225,9 @@ async function handlePayMongoWebhook(ctx: RequestContext): Promise<HttpResponse>
   const event = normalizePayMongoWebhook(parsed.data);
 
   if (event.externalReferenceNumber === null) {
+    console.warn(
+      '[voltsense:paymongo-webhook] payment event missing external_reference_number — no payments row to update',
+    );
     return jsonResponse(202, {
       accepted: true,
       psp: 'paymongo',
@@ -236,6 +240,9 @@ async function handlePayMongoWebhook(ctx: RequestContext): Promise<HttpResponse>
     event.externalReferenceNumber,
   );
   if (match === undefined) {
+    console.warn(
+      `[voltsense:paymongo-webhook] no payment for idempotency_key=${event.externalReferenceNumber}`,
+    );
     return jsonResponse(202, {
       accepted: true,
       psp: 'paymongo',
@@ -327,15 +334,47 @@ async function handlePayMongoWebhook(ctx: RequestContext): Promise<HttpResponse>
   throw new Error(`[voltsense:paymongo-webhook] Unhandled event: ${String(unhandledEvent)}`);
 }
 
-const CreatePaymentRequestSchema = z.object({
-  amount_php: z
-    .string()
-    .regex(/^\d+(\.\d{1,6})?$/, 'amount_php must be a positive decimal string'),
-  description: z.string().min(1).max(255),
-  session_id: z.string().uuid(),
-  reference_number: z.string().min(1).max(64),
-  remarks: z.string().max(255).optional(),
-});
+const PhpAmountString = z
+  .string()
+  .regex(/^\d+(\.\d{1,6})?$/, 'amount must be a positive decimal string');
+
+const CreatePaymentRequestSchema = z
+  .object({
+    amount_php: PhpAmountString.optional(),
+    amountPhp: PhpAmountString.optional(),
+    description: z.string().min(1).max(255).optional(),
+    session_id: z.string().uuid().optional(),
+    sessionId: z.string().uuid().optional(),
+    reference_number: z.string().min(1).max(64).optional(),
+    referenceNumber: z.string().min(1).max(64).optional(),
+    remarks: z.string().max(255).optional(),
+  })
+  .superRefine((data, ctx) => {
+    const sessionId = data.session_id ?? data.sessionId;
+    const amountPhp = data.amount_php ?? data.amountPhp;
+    if (sessionId === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'session_id or sessionId is required' });
+    }
+    if (amountPhp === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'amount_php or amountPhp is required' });
+    }
+  })
+  .transform((data) => {
+    const session_id = data.session_id ?? data.sessionId;
+    const amount_php = data.amount_php ?? data.amountPhp;
+    if (session_id === undefined || amount_php === undefined) {
+      throw new Error('[voltsense:create-payment] session_id and amount_php are required');
+    }
+    const reference_number = data.reference_number ?? data.referenceNumber ?? randomUUID();
+    const description = data.description ?? `VoltSense session payment (${session_id})`;
+    return {
+      session_id,
+      amount_php,
+      description,
+      reference_number,
+      ...(data.remarks !== undefined ? { remarks: data.remarks } : {}),
+    };
+  });
 
 async function handleCreatePayment(ctx: RequestContext): Promise<HttpResponse> {
   const bodyParsed = CreatePaymentRequestSchema.safeParse(parseJsonBody(ctx.rawBody));
