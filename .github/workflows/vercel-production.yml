@@ -19,6 +19,6 @@ jobs:
           node-version: "20"
 
       - name: Deploy to Vercel
-        run: npx vercel@50 deploy --prod --yes --token "$VERCEL_TOKEN"
+        run: npx vercel@latest deploy --prod --yes --token "$VERCEL_TOKEN"
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
