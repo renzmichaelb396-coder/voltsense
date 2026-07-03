@@ -1,9 +1,10 @@
 // Async refund dispatch handler — Law §1.5.9
-// Interfaces with GCash and Maya reversal APIs on settlement execution failure.
+// Interfaces with PayMongo Refunds API on settlement execution failure.
 // All money as NUMERIC string. No 'any'. No float amounts. No hardcoded secrets.
 
 import { z } from 'zod';
 
+import { payMongoBasicAuthHeader, phpStringToCentavos } from './paymongo.js';
 import type { Psp } from '../webhooks/types.js';
 
 // ─── PSP config ───────────────────────────────────────────────────────────────
@@ -16,8 +17,7 @@ export type PspConfig = {
 };
 
 export type RefundConfig = {
-  readonly gcash: PspConfig;
-  readonly maya: PspConfig;
+  readonly paymongo: PspConfig;
 };
 
 // ─── Request ──────────────────────────────────────────────────────────────────
@@ -31,7 +31,7 @@ export type RefundReason =
 export type RefundRequest = {
   paymentId: string;    // VoltSense internal UUID — doubles as idempotency key prefix
   psp: Psp;
-  externalId: string;   // PSP's original transaction ID for the reversal target
+  externalId: string;   // PayMongo payment ID (pay_…) for the reversal target
   amountPhp: string;    // NUMERIC(18,6) string — full hold amount reversed in v1
   reason: RefundReason;
 };
@@ -42,7 +42,7 @@ export type RefundSuccess = {
   outcome: 'success';
   psp: Psp;
   refundId: string;
-  refundedAmountPhp: string;  // echoed by PSP — stored as string, never parsed to float
+  refundedAmountPhp: string;
   processedAt: string;         // ISO 8601 from PSP response
 };
 
@@ -56,45 +56,46 @@ export type RefundFailure = {
 
 export type RefundOutcome = RefundSuccess | RefundFailure;
 
-// ─── GCash response schemas ───────────────────────────────────────────────────
-// Modeled on GCash payment gateway refund API v1.
-// Update when integrating against sandbox credentials.
+// ─── PayMongo refund response schemas ────────────────────────────────────────
 
-const GCashRefundOkSchema = z.object({
-  id: z.string().min(1),
-  status: z.literal('SUCCESS'),
-  refunded_amount: z.string(),
-  processed_at: z.string(),
-});
-
-const GCashRefundErrSchema = z.object({
-  code: z.string().min(1),
-  message: z.string(),
-  retryable: z.boolean().optional().default(false),
-});
-
-// ─── Maya response schemas ────────────────────────────────────────────────────
-// Modeled on PayMaya (Maya) payment gateway refund API.
-// totalAmount.value is a string decimal in their v1 API contract.
-
-const MayaRefundOkSchema = z.object({
-  id: z.string().min(1),
-  status: z.literal('REFUNDED'),
-  totalAmount: z.object({
-    value: z.string(),
-    currency: z.string(),
+const PayMongoRefundOkSchema = z.object({
+  data: z.object({
+    id: z.string().min(1),
+    type: z.literal('refund'),
+    attributes: z.object({
+      amount: z.number().int().positive(),
+      currency: z.literal('PHP'),
+      status: z.string(),
+      created_at: z.number().int(),
+    }),
   }),
-  createdAt: z.string(),
 });
 
-const MayaRefundErrSchema = z.object({
-  code: z.string().min(1),
-  message: z.string(),
+const PayMongoRefundErrSchema = z.object({
+  errors: z
+    .array(
+      z.object({
+        code: z.string(),
+        detail: z.string().optional(),
+      }),
+    )
+    .min(1),
 });
+
+// Map VoltSense refund reasons → PayMongo's closed reason set.
+function toPayMongoRefundReason(reason: RefundReason): string {
+  switch (reason) {
+    case 'hardware_timeout':
+    case 'charger_offline':
+    case 'zero_kwh':
+    case 'amount_mismatch':
+      return 'others';
+    default:
+      return assertNever(reason);
+  }
+}
 
 // ─── HTTP helper ──────────────────────────────────────────────────────────────
-// Wraps fetch with an AbortController-backed timeout.
-// Throws on network error or abort — callers catch and return RefundFailure.
 
 async function fetchWithAbortTimeout(
   url: string,
@@ -110,33 +111,48 @@ async function fetchWithAbortTimeout(
   }
 }
 
-// ─── GCash reversal ───────────────────────────────────────────────────────────
-// POST {baseUrl}/v1/refunds
-// Authorization: Bearer {apiKey}
-// Idempotency-Key: refund-{paymentId}  — prevents double-refund on retry
+function centavosToPhpString(centavos: number): string {
+  const whole = Math.trunc(centavos / 100);
+  const frac = Math.abs(centavos % 100);
+  return `${whole}.${frac.toString().padStart(2, '0')}0000`;
+}
 
-async function dispatchGCashRefund(
+// ─── PayMongo reversal ────────────────────────────────────────────────────────
+// POST {baseUrl}/refunds
+// Authorization: Basic base64({apiKey}:)
+// payment_id = PayMongo pay_… ID stored as externalId
+
+async function dispatchPayMongoRefund(
   req: RefundRequest,
   cfg: PspConfig,
 ): Promise<RefundOutcome> {
+  const amountCentavos = phpStringToCentavos(req.amountPhp);
   const idempotencyKey = `refund-${req.paymentId}`;
+
   const body = JSON.stringify({
-    original_payment_id: req.externalId,
-    amount: req.amountPhp,
-    currency: 'PHP',
-    reason: req.reason.toUpperCase(),
-    idempotency_key: idempotencyKey,
+    data: {
+      attributes: {
+        amount: amountCentavos,
+        payment_id: req.externalId,
+        reason: toPayMongoRefundReason(req.reason),
+        notes: req.reason,
+        metadata: {
+          voltsense_payment_id: req.paymentId,
+          voltsense_psp: req.psp,
+        },
+      },
+    },
   });
 
   let resp: Response;
   try {
     resp = await fetchWithAbortTimeout(
-      `${cfg.baseUrl}/v1/refunds`,
+      `${cfg.baseUrl}/refunds`,
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${cfg.apiKey}`,
+          Authorization: payMongoBasicAuthHeader(cfg.apiKey),
           'Idempotency-Key': idempotencyKey,
         },
         body,
@@ -147,9 +163,9 @@ async function dispatchGCashRefund(
     const isAbort = err instanceof Error && err.name === 'AbortError';
     return {
       outcome: 'failure',
-      psp: 'gcash',
+      psp: req.psp,
       errorCode: isAbort ? 'PSP_HTTP_TIMEOUT' : 'NETWORK_ERROR',
-      errorMessage: err instanceof Error ? err.message : 'Unknown network error reaching GCash',
+      errorMessage: err instanceof Error ? err.message : 'Unknown network error reaching PayMongo',
       retryable: true,
     };
   }
@@ -157,157 +173,49 @@ async function dispatchGCashRefund(
   const raw: unknown = await resp.json();
 
   if (resp.ok) {
-    const parsed = GCashRefundOkSchema.safeParse(raw);
+    const parsed = PayMongoRefundOkSchema.safeParse(raw);
     if (!parsed.success) {
       return {
         outcome: 'failure',
-        psp: 'gcash',
+        psp: req.psp,
         errorCode: 'INVALID_RESPONSE_SCHEMA',
-        errorMessage: `GCash success body did not match expected schema: ${parsed.error.message}`,
+        errorMessage: `PayMongo success body did not match expected schema: ${parsed.error.message}`,
         retryable: false,
       };
     }
     return {
       outcome: 'success',
-      psp: 'gcash',
-      refundId: parsed.data.id,
-      refundedAmountPhp: parsed.data.refunded_amount,
-      processedAt: parsed.data.processed_at,
+      psp: req.psp,
+      refundId: parsed.data.data.id,
+      refundedAmountPhp: centavosToPhpString(parsed.data.data.attributes.amount),
+      processedAt: new Date(parsed.data.data.attributes.created_at * 1000).toISOString(),
     };
   }
 
-  const errParsed = GCashRefundErrSchema.safeParse(raw);
+  const errParsed = PayMongoRefundErrSchema.safeParse(raw);
+  const firstError = errParsed.success ? errParsed.data.errors[0] : undefined;
   return {
     outcome: 'failure',
-    psp: 'gcash',
-    errorCode: errParsed.success ? errParsed.data.code : 'UNKNOWN_ERROR',
-    errorMessage: errParsed.success ? errParsed.data.message : `HTTP ${resp.status}`,
-    retryable: errParsed.success ? errParsed.data.retryable : false,
-  };
-}
-
-// ─── Maya reversal ────────────────────────────────────────────────────────────
-// POST {baseUrl}/payments/{externalId}/refunds
-// Authorization: Basic base64({apiKey}:)
-// requestReferenceNumber acts as Maya's idempotency anchor
-
-async function dispatchMayaRefund(
-  req: RefundRequest,
-  cfg: PspConfig,
-): Promise<RefundOutcome> {
-  const referenceNumber = `refund-${req.paymentId}`;
-  const body = JSON.stringify({
-    totalAmount: {
-      value: req.amountPhp,
-      currency: 'PHP',
-    },
-    reason: req.reason.toUpperCase(),
-    requestReferenceNumber: referenceNumber,
-  });
-
-  const basicToken = Buffer.from(`${cfg.apiKey}:`).toString('base64');
-
-  let resp: Response;
-  try {
-    resp = await fetchWithAbortTimeout(
-      `${cfg.baseUrl}/payments/${req.externalId}/refunds`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Basic ${basicToken}`,
-          'Idempotency-Key': referenceNumber,
-        },
-        body,
-      },
-      cfg.timeoutMs,
-    );
-  } catch (err) {
-    const isAbort = err instanceof Error && err.name === 'AbortError';
-    return {
-      outcome: 'failure',
-      psp: 'maya',
-      errorCode: isAbort ? 'PSP_HTTP_TIMEOUT' : 'NETWORK_ERROR',
-      errorMessage: err instanceof Error ? err.message : 'Unknown network error reaching Maya',
-      retryable: true,
-    };
-  }
-
-  const raw: unknown = await resp.json();
-
-  if (resp.ok) {
-    const parsed = MayaRefundOkSchema.safeParse(raw);
-    if (!parsed.success) {
-      return {
-        outcome: 'failure',
-        psp: 'maya',
-        errorCode: 'INVALID_RESPONSE_SCHEMA',
-        errorMessage: `Maya success body did not match expected schema: ${parsed.error.message}`,
-        retryable: false,
-      };
-    }
-    return {
-      outcome: 'success',
-      psp: 'maya',
-      refundId: parsed.data.id,
-      refundedAmountPhp: parsed.data.totalAmount.value,
-      processedAt: parsed.data.createdAt,
-    };
-  }
-
-  // Maya 409 = idempotent replay: refund was already processed on a prior request.
-  // Return outcome:'success' so executeRevenueSplitOrRefund marks the payment refunded,
-  // not refund_failed — preventing a false ops alert for a completed operation.
-  if (resp.status === 409) {
-    const okParsed = MayaRefundOkSchema.safeParse(raw);
-    if (okParsed.success) {
-      return {
-        outcome: 'success',
-        psp: 'maya',
-        refundId: okParsed.data.id,
-        refundedAmountPhp: okParsed.data.totalAmount.value,
-        processedAt: okParsed.data.createdAt,
-      };
-    }
-    return {
-      outcome: 'success',
-      psp: 'maya',
-      refundId: referenceNumber,
-      refundedAmountPhp: req.amountPhp,
-      processedAt: new Date().toISOString(),
-    };
-  }
-
-  const errParsed = MayaRefundErrSchema.safeParse(raw);
-  return {
-    outcome: 'failure',
-    psp: 'maya',
-    errorCode: errParsed.success ? errParsed.data.code : 'UNKNOWN_ERROR',
-    errorMessage: errParsed.success ? errParsed.data.message : `HTTP ${resp.status}`,
+    psp: req.psp,
+    errorCode: firstError?.code ?? 'UNKNOWN_ERROR',
+    errorMessage: firstError?.detail ?? `HTTP ${resp.status}`,
     retryable: resp.status >= 500,
   };
 }
 
 // ─── dispatchRefund ───────────────────────────────────────────────────────────
-// Public entry point — exhaustive switch on request.psp, assertNever backstop.
+// Public entry point — all PSP channels route through PayMongo Refunds API.
 // Never throws: all error paths return RefundFailure with a retryable flag.
 
 export async function dispatchRefund(
   request: RefundRequest,
   config: RefundConfig,
 ): Promise<RefundOutcome> {
-  switch (request.psp) {
-    case 'gcash':
-      return dispatchGCashRefund(request, config.gcash);
-    case 'maya':
-      return dispatchMayaRefund(request, config.maya);
-    default:
-      return assertNever(request.psp);
-  }
+  return dispatchPayMongoRefund(request, config.paymongo);
 }
 
 // ─── assertNever ──────────────────────────────────────────────────────────────
 
 function assertNever(x: never): never {
-  throw new Error(`[REFUND] Unhandled PSP variant: ${String(x)}`);
+  throw new Error(`[REFUND] Unhandled variant: ${String(x)}`);
 }

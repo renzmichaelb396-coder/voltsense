@@ -61,3 +61,67 @@ export function verifyWebhookSignature(
 export function computeExpectedSignature(payload: string, secret: string): string {
   return createHmac('sha256', secret).update(payload, 'utf8').digest('hex');
 }
+
+// ─── PayMongo webhook signature ───────────────────────────────────────────────
+// Header format: Paymongo-Signature: t=<unix>,te=<test_hex>,li=<live_hex>
+// Signed payload: `${timestamp}.${rawBody}` — HMAC-SHA256 with webhook secret.
+// Use te for test-mode events, li for live-mode events.
+
+export type PayMongoSignatureParts = {
+  readonly timestamp: string;
+  readonly testSignature: string;
+  readonly liveSignature: string;
+};
+
+export function parsePayMongoSignatureHeader(header: string): PayMongoSignatureParts | null {
+  const parts: Record<string, string> = {};
+  for (const segment of header.split(',')) {
+    const eqIndex = segment.indexOf('=');
+    if (eqIndex === -1) continue;
+    const key = segment.slice(0, eqIndex).trim();
+    const value = segment.slice(eqIndex + 1).trim();
+    parts[key] = value;
+  }
+
+  const timestamp = parts['t'];
+  if (timestamp === undefined || timestamp.length === 0) return null;
+
+  return {
+    timestamp,
+    testSignature: parts['te'] ?? '',
+    liveSignature: parts['li'] ?? '',
+  };
+}
+
+export function computePayMongoExpectedSignature(
+  timestamp: string,
+  payload: string,
+  secret: string,
+): string {
+  return createHmac('sha256', secret)
+    .update(`${timestamp}.${payload}`, 'utf8')
+    .digest('hex');
+}
+
+export function verifyPayMongoWebhookSignature(
+  payload: string,
+  signatureHeader: string,
+  secret: string,
+  livemode: boolean,
+): boolean {
+  if (!payload || !signatureHeader || !secret) return false;
+
+  const parsed = parsePayMongoSignatureHeader(signatureHeader);
+  if (parsed === null) return false;
+
+  const received = livemode ? parsed.liveSignature : parsed.testSignature;
+  if (received.length === 0) return false;
+
+  const expected = computePayMongoExpectedSignature(parsed.timestamp, payload, secret);
+  const normalizedReceived = received.toLowerCase();
+
+  if (normalizedReceived.length !== expected.length) return false;
+  if (!/^[0-9a-f]+$/i.test(normalizedReceived)) return false;
+
+  return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(normalizedReceived, 'hex'));
+}
