@@ -172,6 +172,21 @@ function handleInboundFrame(
   throw new Error(`[voltsense:ocpp] unhandled hardware state: ${String(unreachable)}`);
 }
 
+// ─── Outbound RemoteStartTransaction (stub) ───────────────────────────────────
+// Called once a session's payment clears. Live connections aren't tracked by
+// chargePointId yet, so this logs intent only — swap in a real sendCall() once
+// the WebSocket listener keeps a chargePointId → OcppConnection registry.
+
+export async function sendRemoteStartTransaction(
+  chargePointId: string,
+  connectorId: number,
+  idTag: string,
+): Promise<void> {
+  console.log(
+    `[voltsense:ocpp] RemoteStartTransaction intent — chargePointId=${chargePointId} connectorId=${connectorId} idTag=${idTag} (stub: not yet wired to a live OCPP connection)`,
+  );
+}
+
 // ─── Listener handle ─────────────────────────────────────────────────────────
 
 export type OcppWsListener = {

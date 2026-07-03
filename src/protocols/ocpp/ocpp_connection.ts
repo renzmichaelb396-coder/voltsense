@@ -1,6 +1,12 @@
 // Runtime anchor for OCPP 1.6J connection lifecycle — Law §1.1
 // Inspector rule: action: string or payload: any in this file = P0 weld violation.
 
+import { Decimal } from 'decimal.js';
+import { and, desc, eq, inArray } from 'drizzle-orm';
+
+import * as schema from '../../db/schema.js';
+import { executeRevenueSplitOrRefund, type SettlementDb } from '../../services/settlement.js';
+import { loadRefundConfigFromEnv } from '../../services/refund.js';
 import {
   type OcppInbound,
   type OcppCall,
@@ -43,6 +49,44 @@ function isBootNotificationPayload(value: unknown): value is BootNotificationPay
     typeof v['chargePointModel'] === 'string' && v['chargePointModel'].length > 0 &&
     typeof v['chargePointSerialNumber'] === 'string' && v['chargePointSerialNumber'].length > 0 &&
     typeof v['firmwareVersion'] === 'string'
+  );
+}
+
+// ─── StartTransaction / StopTransaction payload guards ────────────────────────
+// Needed to correlate the CSMS-assigned transactionId back to a VoltSense
+// session for settlement (§1.4.4) — neither field is part of the OcppAction union.
+
+type StartTransactionPayload = {
+  connectorId: number;
+  idTag: string;
+  meterStart: number;
+  timestamp: string;
+};
+
+function isStartTransactionPayload(value: unknown): value is StartTransactionPayload {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v['connectorId'] === 'number' &&
+    typeof v['idTag'] === 'string' && v['idTag'].length > 0 &&
+    typeof v['meterStart'] === 'number' &&
+    typeof v['timestamp'] === 'string'
+  );
+}
+
+type StopTransactionPayload = {
+  transactionId: number;
+  meterStop: number;
+  timestamp: string;
+};
+
+function isStopTransactionPayload(value: unknown): value is StopTransactionPayload {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v['transactionId'] === 'number' &&
+    typeof v['meterStop'] === 'number' &&
+    typeof v['timestamp'] === 'string'
   );
 }
 
@@ -179,15 +223,21 @@ export class OcppConnection {
   private pendingCallSweepTimer: ReturnType<typeof setInterval> | null = null;
   private send: (frame: string) => void;
   private registryLookup: ChargePointRegistryLookup;
+  private db: SettlementDb | undefined;
+  // CSMS-assigned transactionId → VoltSense session id, so StopTransaction can
+  // find its session without relying on optional/absent OCPP fields (§1.4.4).
+  private activeTransactions: Map<number, string> = new Map();
 
   constructor(
     chargePointId: string,
     send: (frame: string) => void,
     registryLookup: ChargePointRegistryLookup,
+    db?: SettlementDb,
   ) {
     this.chargePointId = chargePointId;
     this.send = send;
     this.registryLookup = registryLookup;
+    this.db = db;
   }
 
   getState(): OcppSessionState {
@@ -272,10 +322,17 @@ export class OcppConnection {
         return buildCallResultFrame(msg.messageId, {});
       case 'Authorize':
         return buildCallResultFrame(msg.messageId, { status: 'Accepted' });
-      case 'StartTransaction':
-        return buildCallResultFrame(msg.messageId, { transactionId: nextTransactionId(), idTagInfo: { status: 'Accepted' } });
-      case 'StopTransaction':
+      case 'StartTransaction': {
+        const transactionId = nextTransactionId();
+        this.trackStartTransaction(transactionId, msg.payload);
+        return buildCallResultFrame(msg.messageId, { transactionId, idTagInfo: { status: 'Accepted' } });
+      }
+      case 'StopTransaction': {
+        // Ack immediately — settlement runs after, so a slow PSP call never
+        // blocks the OCPP response the charge point is waiting on.
+        this.trackStopTransaction(msg.payload);
         return buildCallResultFrame(msg.messageId, {});
+      }
       case 'MeterValues':
         return buildCallResultFrame(msg.messageId, {});
       case 'DiagnosticsStatusNotification':
@@ -342,6 +399,159 @@ export class OcppConnection {
 
   private handleHeartbeat(msg: OcppCall): string {
     return buildCallResultFrame(msg.messageId, { currentTime: new Date().toISOString() });
+  }
+
+  // ─── StartTransaction session correlation (fire-and-forget) ───────────────
+  // No db injected (e.g. the simulation harness) → nothing to correlate.
+
+  private trackStartTransaction(transactionId: number, payload: unknown): void {
+    if (this.db === undefined || !isStartTransactionPayload(payload)) {
+      return;
+    }
+    const db = this.db;
+    void this.resolveSessionForStart(db, transactionId, payload).catch((err: unknown) => {
+      console.error(
+        `[voltsense:ocpp] failed to resolve session for StartTransaction: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  }
+
+  private async resolveSessionForStart(
+    db: SettlementDb,
+    transactionId: number,
+    payload: StartTransactionPayload,
+  ): Promise<void> {
+    const rows = await db
+      .select()
+      .from(schema.sessions)
+      .where(
+        and(
+          eq(schema.sessions.chargePointId, this.chargePointId),
+          eq(schema.sessions.idTag, payload.idTag),
+          inArray(schema.sessions.status, ['payment_cleared', 'authorized']),
+        ),
+      )
+      .orderBy(desc(schema.sessions.createdAt))
+      .limit(1);
+
+    const session = rows[0];
+    if (session === undefined) {
+      console.warn(
+        `[voltsense:ocpp] StartTransaction with no matching session: chargePointId=${this.chargePointId} idTag=${payload.idTag}`,
+      );
+      return;
+    }
+
+    await db
+      .update(schema.sessions)
+      .set({
+        status: 'charging',
+        meterStartWh: payload.meterStart,
+        startedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.sessions.id, session.id));
+
+    this.activeTransactions.set(transactionId, session.id);
+  }
+
+  // ─── StopTransaction settlement (fire-and-forget) ──────────────────────────
+  // Sets kwhDelivered THEN runs executeRevenueSplitOrRefund — settlement.ts
+  // rejects with "kwhDelivered is null" if that order is ever inverted.
+
+  private trackStopTransaction(payload: unknown): void {
+    if (this.db === undefined || !isStopTransactionPayload(payload)) {
+      return;
+    }
+    const db = this.db;
+    void this.settleStopTransaction(db, payload).catch((err: unknown) => {
+      console.error(
+        `[voltsense:ocpp] failed to settle StopTransaction: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  }
+
+  private async settleStopTransaction(db: SettlementDb, payload: StopTransactionPayload): Promise<void> {
+    const sessionId = this.activeTransactions.get(payload.transactionId);
+    if (sessionId === undefined) {
+      console.warn(`[voltsense:ocpp] StopTransaction for untracked transactionId=${payload.transactionId}`);
+      return;
+    }
+    this.activeTransactions.delete(payload.transactionId);
+
+    const sessionRows = await db
+      .select()
+      .from(schema.sessions)
+      .where(eq(schema.sessions.id, sessionId))
+      .limit(1);
+
+    const session = sessionRows[0];
+    if (session === undefined) {
+      console.error(`[voltsense:ocpp] session not found for StopTransaction: sessionId=${sessionId}`);
+      return;
+    }
+
+    const meterStartWh = session.meterStartWh ?? 0;
+    const kwhDelivered = new Decimal(payload.meterStop - meterStartWh)
+      .div(1000)
+      .toDecimalPlaces(6)
+      .toFixed(6);
+
+    await db
+      .update(schema.sessions)
+      .set({
+        meterStopWh: payload.meterStop,
+        kwhDelivered,
+        stoppedAt: new Date(),
+        status: 'completed',
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.sessions.id, session.id));
+
+    const paymentRows = await db
+      .select()
+      .from(schema.payments)
+      .where(and(eq(schema.payments.sessionId, session.id), eq(schema.payments.status, 'paid')))
+      .orderBy(desc(schema.payments.paidAt))
+      .limit(1);
+
+    const payment = paymentRows[0];
+    if (payment === undefined) {
+      console.error(`[voltsense:ocpp] no paid payment found for session=${session.id} — cannot settle`);
+      return;
+    }
+
+    const chargePointRows = await db
+      .select({ siteId: schema.chargePoints.siteId })
+      .from(schema.chargePoints)
+      .where(eq(schema.chargePoints.id, this.chargePointId))
+      .limit(1);
+
+    const stationId = chargePointRows[0]?.siteId;
+    if (stationId === undefined) {
+      console.error(`[voltsense:ocpp] charge point not found: chargePointId=${this.chargePointId}`);
+      return;
+    }
+
+    let refundConfig;
+    try {
+      refundConfig = loadRefundConfigFromEnv();
+    } catch (err) {
+      console.error(`[voltsense:ocpp] refund config error: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    const settlementResult = await executeRevenueSplitOrRefund({
+      db,
+      paymentId: payment.id,
+      totalAmount: payment.amountPhp,
+      stationId,
+      psp: payment.psp,
+      externalId: payment.externalId,
+      refundConfig,
+    });
+
+    console.log('[voltsense:ocpp] settlement outcome', JSON.stringify(settlementResult));
   }
 
   // ─── CallResult / CallError routing ────────────────────────────────────────

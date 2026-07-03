@@ -6,17 +6,13 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http';
 
-import { eq } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import * as schema from '../db/schema.js';
 import { createPaymentLink, loadPayMongoConfigFromEnv } from '../services/paymongo.js';
-import { loadRefundConfigFromEnv } from '../services/refund.js';
-import {
-  executeRevenueSplitOrRefund,
-  type SettlementDb,
-  type SettlementWithRefundResult,
-} from '../services/settlement.js';
+import type { SettlementDb } from '../services/settlement.js';
+import { sendRemoteStartTransaction } from './ocpp_ws.js';
 import { verifyPayMongoWebhookSignature } from '../webhooks/crypto.js';
 import {
   isPayMongoFailedEvent,
@@ -183,23 +179,6 @@ async function findSessionPaymentByReferenceNumber(
   return { session: row.session, payment: row.payment };
 }
 
-async function resolveStationId(
-  db: SettlementDb,
-  chargePointId: string,
-): Promise<string | undefined> {
-  const rows = await db
-    .select({ siteId: schema.chargePoints.siteId })
-    .from(schema.chargePoints)
-    .where(eq(schema.chargePoints.id, chargePointId))
-    .limit(1);
-
-  return rows[0]?.siteId;
-}
-
-function logSettlementOutcome(result: SettlementWithRefundResult): void {
-  console.log('[voltsense:paymongo-webhook] settlement outcome', JSON.stringify(result));
-}
-
 async function handlePayMongoWebhook(ctx: RequestContext): Promise<HttpResponse> {
   const secret = loadPayMongoWebhookSecret();
   if (secret === null) {
@@ -263,53 +242,25 @@ async function handlePayMongoWebhook(ctx: RequestContext): Promise<HttpResponse>
       })
       .where(eq(schema.payments.id, payment.id));
 
-    const stationId = await resolveStationId(ctx.db, session.chargePointId);
-    if (stationId === undefined) {
-      console.error(
-        `[voltsense:paymongo-webhook] charge point not found: chargePointId=${session.chargePointId}`,
-      );
-      return jsonResponse(202, {
-        accepted: true,
-        psp: 'paymongo',
-        event: event.event,
-        payment_id: event.paymentId,
-        error: 'station_not_found',
-      });
-    }
+    // Settlement runs later, off StopTransaction (once kwhDelivered is known) —
+    // not here. Payment clearing only authorizes the charge to start.
+    await ctx.db
+      .update(schema.sessions)
+      .set({
+        status: 'payment_cleared',
+        paymentClearedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.sessions.id, session.id));
 
-    let refundConfig;
-    try {
-      refundConfig = loadRefundConfigFromEnv();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'paymongo_not_configured';
-      console.error(`[voltsense:paymongo-webhook] refund config error: ${message}`);
-      return jsonResponse(202, {
-        accepted: true,
-        psp: 'paymongo',
-        event: event.event,
-        payment_id: event.paymentId,
-        error: 'paymongo_not_configured',
-      });
-    }
-
-    const settlementResult = await executeRevenueSplitOrRefund({
-      db: ctx.db,
-      paymentId: payment.id,
-      totalAmount: payment.amountPhp,
-      stationId,
-      psp: 'paymongo',
-      externalId: event.paymentId,
-      refundConfig,
-    });
-
-    logSettlementOutcome(settlementResult);
+    await sendRemoteStartTransaction(session.chargePointId, session.connectorId, session.idTag);
 
     return jsonResponse(202, {
       accepted: true,
       psp: 'paymongo',
       event: event.event,
       payment_id: event.paymentId,
-      settlement_status: settlementResult.status,
+      status: 'charging_authorized',
     });
   }
 
@@ -447,6 +398,120 @@ async function handleCreatePayment(ctx: RequestContext): Promise<HttpResponse> {
   });
 }
 
+const PACKAGE_IDS = ['PKG_5KWH', 'PKG_10KWH', 'PKG_15KWH', 'PKG_FULL'] as const;
+type PackageId = (typeof PACKAGE_IDS)[number];
+
+const PACKAGE_MAX_KWH: Readonly<Record<PackageId, string | null>> = {
+  PKG_5KWH: '5',
+  PKG_10KWH: '10',
+  PKG_15KWH: '15',
+  PKG_FULL: null,
+};
+
+const CHECKOUT_AUTH_WINDOW_MS = 15 * 60 * 1000;
+
+const CheckoutRequestSchema = z.object({
+  chargePointId: z.string().uuid(),
+  connectorId: z.number().int().positive(),
+  packageId: z.enum(PACKAGE_IDS),
+  idTag: z.string().min(1),
+  amountPhp: PhpAmountString,
+});
+
+async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
+  const bodyParsed = CheckoutRequestSchema.safeParse(parseJsonBody(ctx.rawBody));
+  if (!bodyParsed.success) {
+    return jsonResponse(400, { error: 'invalid_checkout_payload' });
+  }
+  const { chargePointId, connectorId, packageId, idTag, amountPhp } = bodyParsed.data;
+
+  const chargePointRows = await ctx.db
+    .select({ siteId: schema.chargePoints.siteId })
+    .from(schema.chargePoints)
+    .where(eq(schema.chargePoints.id, chargePointId))
+    .limit(1);
+
+  const chargePoint = chargePointRows[0];
+  if (chargePoint === undefined) {
+    return jsonResponse(404, { error: 'charge_point_not_found' });
+  }
+
+  const tariffRows = await ctx.db
+    .select()
+    .from(schema.tariffs)
+    .where(eq(schema.tariffs.siteId, chargePoint.siteId))
+    .orderBy(desc(schema.tariffs.effectiveFrom))
+    .limit(1);
+
+  const tariff = tariffRows[0];
+  if (tariff === undefined) {
+    return jsonResponse(404, { error: 'tariff_not_found' });
+  }
+
+  let paymongoConfig;
+  try {
+    paymongoConfig = loadPayMongoConfigFromEnv();
+  } catch {
+    return jsonResponse(500, { error: 'paymongo_not_configured' });
+  }
+
+  const insertedSessions = await ctx.db
+    .insert(schema.sessions)
+    .values({
+      chargePointId,
+      connectorId,
+      status: 'awaiting_payment',
+      idTag,
+      packageId,
+      snapshotDuRatePerKwh: tariff.duRatePerKwh,
+      snapshotHostMarginPerKwh: tariff.hostMarginPerKwh,
+      snapshotPlatformFeePerKwh: tariff.platformFeePerKwh,
+      snapshotPlatformFeeFlatPhp: tariff.platformFeeFlatPhp,
+      snapshotPspFeeRate: tariff.pspFeeRate,
+      maxKwh: PACKAGE_MAX_KWH[packageId],
+      holdAmountPhp: amountPhp,
+      authExpiresAt: new Date(Date.now() + CHECKOUT_AUTH_WINDOW_MS),
+    })
+    .returning({ id: schema.sessions.id });
+
+  const session = insertedSessions[0];
+  if (session === undefined) {
+    throw new Error('[voltsense:checkout] sessions insert returned no row');
+  }
+
+  const linkResult = await createPaymentLink(
+    {
+      amountPhp,
+      referenceNumber: session.id,
+      description: 'VoltSense charging session - GoMandaloyo',
+    },
+    paymongoConfig,
+  );
+
+  if (linkResult.outcome === 'failure') {
+    return jsonResponse(502, {
+      error: 'paymongo_link_creation_failed',
+      code: linkResult.errorCode,
+      message: linkResult.errorMessage,
+    });
+  }
+
+  await ctx.db.insert(schema.payments).values({
+    sessionId: session.id,
+    psp: 'paymongo',
+    externalId: '',
+    idempotencyKey: session.id,
+    amountPhp,
+    status: 'pending',
+    rawPayload: {},
+  });
+
+  return jsonResponse(201, {
+    sessionId: session.id,
+    checkoutUrl: linkResult.checkoutUrl,
+  });
+}
+
 /** @deprecated Xendit rail replaced by PayMongo — handler retained for in-flight events only. */
 function handleXenditWebhook(ctx: RequestContext): HttpResponse {
   const parsed = safeParseXenditWebhookPayload(parseJsonBody(ctx.rawBody));
@@ -502,6 +567,12 @@ export const ROUTE_TABLE: readonly RouteDefinition[] = [
     pathname: '/payments/create',
     auth: 'public',
     handler: handleCreatePayment,
+  },
+  {
+    method: 'POST',
+    pathname: '/checkout',
+    auth: 'public',
+    handler: handleCheckout,
   },
   {
     method: 'POST',
