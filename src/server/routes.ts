@@ -436,6 +436,17 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
     return jsonResponse(404, { error: 'charge_point_not_found' });
   }
 
+  const siteRows = await ctx.db
+    .select({ name: schema.sites.name })
+    .from(schema.sites)
+    .where(eq(schema.sites.id, chargePoint.siteId))
+    .limit(1);
+
+  const site = siteRows[0];
+  if (site === undefined) {
+    return jsonResponse(404, { error: 'site_not_found' });
+  }
+
   const tariffRows = await ctx.db
     .select()
     .from(schema.tariffs)
@@ -483,7 +494,7 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
     {
       amountPhp,
       referenceNumber: session.id,
-      description: 'VoltSense charging session - GoMandaloyo',
+      description: `VoltSense charging session — ${site.name}`,
     },
     paymongoConfig,
   );

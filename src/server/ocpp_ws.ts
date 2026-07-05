@@ -155,6 +155,23 @@ function extractChargePointId(req: IncomingMessage): string | null {
   return last !== undefined && last.length > 0 ? decodeURIComponent(last) : null;
 }
 
+// ─── URL segment → charge point UUID resolution ───────────────────────────────
+// OCPP chargers connect with their serialNumber as the URL path segment, but
+// every downstream consumer (sessions.chargePointId, liveConnections lookups
+// from sendRemoteStartTransaction) works in terms of the charge_points.id UUID.
+// Resolve once at connection time so liveConnections is keyed by UUID
+// consistently — falls back to the raw segment if it's already a UUID (or
+// unrecognized; the registry lookup below will then report 'not_found').
+
+async function resolveChargePointId(db: SettlementDb, urlSegment: string): Promise<string> {
+  const rows = await db
+    .select({ id: schema.chargePoints.id })
+    .from(schema.chargePoints)
+    .where(eq(schema.chargePoints.serialNumber, urlSegment))
+    .limit(1);
+  return rows[0]?.id ?? urlSegment;
+}
+
 // ─── DB-backed registry lookup ─────────────────────────────────────────────────
 // §1.1.3 step 2 requires 'provisioned' to accept BootNotification. Resolved once
 // per connection (not per-frame) since ChargePointRegistryLookup is synchronous.
@@ -245,9 +262,10 @@ async function markSessionChargerOffline(chargePointId: string, idTag: string): 
 
 async function handleConnection(
   socket: WebSocket,
-  chargePointId: string,
+  urlSegment: string,
   db: SettlementDb,
 ): Promise<void> {
+  const chargePointId = await resolveChargePointId(db, urlSegment);
   const registryStatus = await lookupChargePointRegistryStatus(db, chargePointId);
   const registryLookup: ChargePointRegistryLookup = () => registryStatus;
 
@@ -370,19 +388,19 @@ export async function startOcppWsListener(
 
   wss.on('connection', (socket: WebSocket, request) => {
     const peer = request.socket.remoteAddress ?? 'unknown';
-    const chargePointId = extractChargePointId(request);
+    const urlSegment = extractChargePointId(request);
 
-    if (chargePointId === null) {
+    if (urlSegment === null) {
       console.error(`[voltsense:ocpp] connection rejected from ${peer} — no chargePointId in path`);
       socket.close(1008, 'chargePointId required in connection path');
       return;
     }
 
-    console.log(`[voltsense:ocpp] charge point ${chargePointId} connected from ${peer}`);
+    console.log(`[voltsense:ocpp] charge point ${urlSegment} connected from ${peer}`);
 
-    void handleConnection(socket, chargePointId, db).catch((error: unknown) => {
+    void handleConnection(socket, urlSegment, db).catch((error: unknown) => {
       console.error(
-        `[voltsense:ocpp] failed to initialize connection for ${chargePointId}: ${error instanceof Error ? error.message : String(error)}`,
+        `[voltsense:ocpp] failed to initialize connection for ${urlSegment}: ${error instanceof Error ? error.message : String(error)}`,
       );
       socket.close(1011, 'Internal error');
     });
