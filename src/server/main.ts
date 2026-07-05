@@ -1,5 +1,5 @@
 // Process entrypoint — boots the VoltSense HTTP server with shield credentials from env,
-// alongside the OCPP 1.6J WebSocket listener (bench port from ACTIVE_HARDWARE_CONFIG).
+// alongside the OCPP 1.6J WebSocket listener sharing the same port via http.Server upgrade.
 
 import { loadDbFromEnv } from '../db/client.js';
 import { startHttpServerFromEnv } from './http.js';
@@ -22,11 +22,9 @@ server.on('error', (error: Error) => {
   process.exitCode = 1;
 });
 
-startOcppWsListener(db, ACTIVE_HARDWARE_CONFIG)
+startOcppWsListener(db, ACTIVE_HARDWARE_CONFIG, server)
   .then(() => {
-    console.log(
-      `[voltsense:ocpp] WebSocket listener active on port ${ACTIVE_HARDWARE_CONFIG.wsPort}`,
-    );
+    console.log('[voltsense:ocpp] WebSocket listener active — sharing HTTP server port');
   })
   .catch((error: unknown) => {
     const message = error instanceof Error ? error.message : 'unknown_error';

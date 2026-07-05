@@ -21,7 +21,7 @@
 //   - Node has no native WebSocket *server*; we use the project's existing `ws`
 //     dependency (the global `WebSocket` is a client-only, experimental API).
 
-import type { IncomingMessage } from 'node:http';
+import type { IncomingMessage, Server as HttpServer } from 'node:http';
 
 import { and, desc, eq } from 'drizzle-orm';
 import {
@@ -342,11 +342,15 @@ export type OcppWsListener = {
 export async function startOcppWsListener(
   db: SettlementDb,
   config: OcppHardwareConfig = ACTIVE_HARDWARE_CONFIG,
+  httpServer?: HttpServer,
 ): Promise<OcppWsListener> {
   activeDb = db;
 
   // §10.1 routing invariant — a live BESEN station may only bind port 8080.
-  assertPhysicalHardwarePortLock(config);
+  // Skipped when sharing the HTTP server (production: Render exposes one port).
+  if (httpServer === undefined) {
+    assertPhysicalHardwarePortLock(config);
+  }
 
   // §10.3 handshake interceptor — enforce Security Profile auth before the
   // upgrade completes when a physical charger is on the wire. Closes over the
@@ -363,28 +367,59 @@ export async function startOcppWsListener(
     callback(false, 401, 'Unauthorized');
   };
 
-  const wss = new WebSocketServer({ port: config.wsPort, verifyClient });
+  let wss: WebSocketServer;
 
-  // Resolve only once the socket is actually bound; reject on bind failure
-  // (e.g. EADDRINUSE) so callers can surface a real startup error.
-  await new Promise<void>((resolve, reject) => {
-    const onListening = (): void => {
-      wss.off('error', onError);
-      resolve();
-    };
-    const onError = (error: Error): void => {
-      wss.off('listening', onListening);
-      reject(error);
-    };
-    wss.once('listening', onListening);
-    wss.once('error', onError);
-  });
+  if (httpServer !== undefined) {
+    // Production (Render): share the single exposed $PORT via the http.Server
+    // upgrade event. noServer:true means wss never binds its own port — all
+    // /ocpp/* WebSocket upgrades are forwarded here from the HTTP server.
+    wss = new WebSocketServer({ noServer: true });
 
-  console.log(
-    `[voltsense:ocpp] WebSocket listener bound on port ${config.wsPort} — bench mode: ${describeBenchMode(
-      config.testState,
-    )}`,
-  );
+    httpServer.on('upgrade', (req: IncomingMessage, socket, head) => {
+      const url = req.url ?? '';
+      if (!url.startsWith('/ocpp/')) {
+        socket.destroy();
+        return;
+      }
+      const info = { origin: req.headers.origin ?? '', req, secure: false };
+      verifyClient(info, (allowed, code, message) => {
+        if (!allowed) {
+          socket.write(`HTTP/1.1 ${code ?? 401} ${message ?? 'Unauthorized'}\r\n\r\n`);
+          socket.destroy();
+          return;
+        }
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          wss.emit('connection', ws, req);
+        });
+      });
+    });
+
+    console.log(
+      `[voltsense:ocpp] WebSocket listener attached to HTTP server — bench mode: ${describeBenchMode(config.testState)}`,
+    );
+  } else {
+    // Bench: bind own isolated port (not behind Render's single-port proxy).
+    wss = new WebSocketServer({ port: config.wsPort, verifyClient });
+
+    // Resolve only once the socket is actually bound; reject on bind failure
+    // (e.g. EADDRINUSE) so callers can surface a real startup error.
+    await new Promise<void>((resolve, reject) => {
+      const onListening = (): void => {
+        wss.off('error', onError);
+        resolve();
+      };
+      const onError = (error: Error): void => {
+        wss.off('listening', onListening);
+        reject(error);
+      };
+      wss.once('listening', onListening);
+      wss.once('error', onError);
+    });
+
+    console.log(
+      `[voltsense:ocpp] WebSocket listener bound on port ${config.wsPort} — bench mode: ${describeBenchMode(config.testState)}`,
+    );
+  }
 
   wss.on('connection', (socket: WebSocket, request) => {
     const peer = request.socket.remoteAddress ?? 'unknown';
