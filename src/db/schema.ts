@@ -187,6 +187,10 @@ export const sessions = pgTable('sessions', {
   meterStopWh: integer('meter_stop_wh'),
   kwhDelivered: numeric('kwh_delivered', { precision: 18, scale: 6 }),
 
+  // CSMS-assigned OCPP transactionId — persisted so StopTransaction can recover
+  // the session after a process restart wipes the in-memory activeTransactions map.
+  ocppTransactionId: integer('ocpp_transaction_id'),
+
   // Settlement amounts — all NUMERIC(18,6) (Law §1.4.4)
   energyChargePhp: numeric('energy_charge_php', { precision: 18, scale: 6 }),
   pspFeePhp: numeric('psp_fee_php', { precision: 18, scale: 6 }),

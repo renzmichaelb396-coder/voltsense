@@ -540,6 +540,7 @@ export class OcppConnection {
         status: 'charging',
         meterStartWh: payload.meterStart,
         startedAt: new Date(),
+        ocppTransactionId: transactionId,
         updatedAt: new Date(),
       })
       .where(eq(schema.sessions.id, session.id));
@@ -564,9 +565,29 @@ export class OcppConnection {
   }
 
   private async settleStopTransaction(db: SettlementDb, payload: StopTransactionPayload): Promise<void> {
-    const sessionId = this.activeTransactions.get(payload.transactionId);
+    let sessionId = this.activeTransactions.get(payload.transactionId);
+
     if (sessionId === undefined) {
-      console.warn(`[voltsense:ocpp] StopTransaction for untracked transactionId=${payload.transactionId}`);
+      // Render restart recovery: the in-memory map is gone, so fall back to the
+      // DB-persisted ocppTransactionId set in resolveSessionForStart.
+      const rows = await db
+        .select({ id: schema.sessions.id })
+        .from(schema.sessions)
+        .where(
+          and(
+            eq(schema.sessions.chargePointId, this.chargePointId),
+            eq(schema.sessions.ocppTransactionId, payload.transactionId),
+            eq(schema.sessions.status, 'charging'),
+          ),
+        )
+        .limit(1);
+      sessionId = rows[0]?.id;
+    }
+
+    if (sessionId === undefined) {
+      console.warn(
+        `[voltsense:ocpp] StopTransaction for untracked transactionId=${payload.transactionId} chargePointId=${this.chargePointId}`,
+      );
       return;
     }
     this.activeTransactions.delete(payload.transactionId);

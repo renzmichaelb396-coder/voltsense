@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http';
 
+import { Decimal } from 'decimal.js';
 import { desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
@@ -408,6 +409,22 @@ const PACKAGE_MAX_KWH: Readonly<Record<PackageId, string | null>> = {
   PKG_FULL: null,
 };
 
+// Full Session is a flat price, not a per-kWh formula — it has no kWh cap.
+const FULL_SESSION_FLAT_PHP = '500.00';
+
+function computePackagePrices(tariff: typeof schema.tariffs.$inferSelect): Record<PackageId, string> {
+  const tariffTotal = new Decimal(tariff.duRatePerKwh)
+    .plus(tariff.hostMarginPerKwh)
+    .plus(tariff.platformFeePerKwh);
+
+  return {
+    PKG_5KWH: tariffTotal.times('5').plus(tariff.platformFeeFlatPhp).toFixed(2),
+    PKG_10KWH: tariffTotal.times('10').plus(tariff.platformFeeFlatPhp).toFixed(2),
+    PKG_15KWH: tariffTotal.times('15').plus(tariff.platformFeeFlatPhp).toFixed(2),
+    PKG_FULL: FULL_SESSION_FLAT_PHP,
+  };
+}
+
 const CHECKOUT_AUTH_WINDOW_MS = 15 * 60 * 1000;
 
 const CheckoutRequestSchema = z.object({
@@ -415,7 +432,6 @@ const CheckoutRequestSchema = z.object({
   connectorId: z.number().int().positive(),
   packageId: z.enum(PACKAGE_IDS),
   idTag: z.string().min(1),
-  amountPhp: PhpAmountString,
 });
 
 async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
@@ -423,7 +439,7 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
   if (!bodyParsed.success) {
     return jsonResponse(400, { error: 'invalid_checkout_payload' });
   }
-  const { chargePointId, connectorId, packageId, idTag, amountPhp } = bodyParsed.data;
+  const { chargePointId, connectorId, packageId, idTag } = bodyParsed.data;
 
   const chargePointRows = await ctx.db
     .select({ siteId: schema.chargePoints.siteId })
@@ -466,6 +482,8 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
     return jsonResponse(500, { error: 'paymongo_not_configured' });
   }
 
+  const computedAmountPhp = computePackagePrices(tariff)[packageId];
+
   const insertedSessions = await ctx.db
     .insert(schema.sessions)
     .values({
@@ -480,7 +498,7 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
       snapshotPlatformFeeFlatPhp: tariff.platformFeeFlatPhp,
       snapshotPspFeeRate: tariff.pspFeeRate,
       maxKwh: PACKAGE_MAX_KWH[packageId],
-      holdAmountPhp: amountPhp,
+      holdAmountPhp: computedAmountPhp,
       authExpiresAt: new Date(Date.now() + CHECKOUT_AUTH_WINDOW_MS),
     })
     .returning({ id: schema.sessions.id });
@@ -492,7 +510,7 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
 
   const linkResult = await createPaymentLink(
     {
-      amountPhp,
+      amountPhp: computedAmountPhp,
       referenceNumber: session.id,
       description: `VoltSense charging session — ${site.name}`,
     },
@@ -512,7 +530,7 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
     psp: 'paymongo',
     externalId: '',
     idempotencyKey: session.id,
-    amountPhp,
+    amountPhp: computedAmountPhp,
     status: 'pending',
     rawPayload: {},
   });
@@ -536,12 +554,22 @@ function handleNotFound(_ctx: RequestContext): HttpResponse {
   return jsonResponse(404, { error: 'not_found' });
 }
 
+function handleHealth(_ctx: RequestContext): HttpResponse {
+  return jsonResponse(200, { status: 'ok', ts: Date.now() });
+}
+
 export const ROUTE_TABLE: readonly RouteDefinition[] = [
   {
     method: 'GET',
     pathname: '/',
     auth: 'public',
     handler: handlePublicLanding,
+  },
+  {
+    method: 'GET',
+    pathname: '/health',
+    auth: 'public',
+    handler: handleHealth,
   },
   {
     method: 'GET',
