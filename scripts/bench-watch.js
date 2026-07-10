@@ -3,6 +3,8 @@
 
 const SERVER = 'https://voltsense-pmfq.onrender.com';
 const POLL_MS = 4000;
+const AUTH_USER = process.env.OCPP_AUTH_USER || '(set OCPP_AUTH_USER env var)';
+const AUTH_PASSWORD = process.env.OCPP_AUTH_PASSWORD || '(set OCPP_AUTH_PASSWORD env var)';
 
 function line(c = '─', n = 52) { return c.repeat(n); }
 
@@ -50,13 +52,13 @@ async function preflight() {
   console.log('');
   console.log('  Step 4: Set URL — pick WSS (not WS), then enter:');
   console.log('');
-  console.log('          wss://voltsense-pmfq.onrender.com/ocpp/VS-MAN-001');
+  console.log('          wss://voltsense-pmfq.onrender.com/ocpp/' + AUTH_USER);
   console.log('');
-  console.log('  Step 5: ChargerID field → enter:  VS-MAN-001');
+  console.log('  Step 5: ChargerID field → enter:  ' + AUTH_USER);
   console.log('');
   console.log('  Step 6: If asked for credentials / Basic Auth:');
-  console.log('          Username:  VS-MAN-001');
-  console.log('          Password:  voltsense-pilot');
+  console.log('          Username:  ' + AUTH_USER);
+  console.log('          Password:  ' + AUTH_PASSWORD);
   console.log('');
   console.log('  Step 7: Tap Save / Apply. Charger restarts briefly.');
   console.log('');

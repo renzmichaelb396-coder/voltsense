@@ -93,6 +93,48 @@ function isStopTransactionPayload(value: unknown): value is StopTransactionPaylo
   );
 }
 
+// ─── MeterValues payload guard ─────────────────────────────────────────────────
+// Needed to read the Energy.Active.Import.Register sampledValue for kWh cutoff
+// enforcement — MeterValues is not part of the OcppAction union payload shapes.
+
+type MeterValuesSampledValue = {
+  value: string;
+  measurand?: string;
+  unit?: string;
+};
+
+type MeterValuesEntry = {
+  timestamp: string;
+  sampledValue: MeterValuesSampledValue[];
+};
+
+type MeterValuesPayload = {
+  connectorId: number;
+  transactionId?: number;
+  meterValue: MeterValuesEntry[];
+};
+
+function isMeterValuesPayload(value: unknown): value is MeterValuesPayload {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return typeof v['connectorId'] === 'number' && Array.isArray(v['meterValue']);
+}
+
+// Reads the last Energy.Active.Import.Register sampledValue across all
+// meterValue entries (chronological per OCPP 1.6J) and normalizes to Wh.
+function extractEnergyActiveImportWh(payload: MeterValuesPayload): number | null {
+  let result: number | null = null;
+  for (const entry of payload.meterValue) {
+    for (const sampled of entry.sampledValue) {
+      if (sampled.measurand !== 'Energy.Active.Import.Register') continue;
+      const raw = Number(sampled.value);
+      if (Number.isNaN(raw)) continue;
+      result = sampled.unit === 'kWh' ? raw * 1000 : raw;
+    }
+  }
+  return result;
+}
+
 // ─── sendCall outcome formatting ───────────────────────────────────────────────
 // Used to log BootNotification-retry results without leaking 'unknown' shapes.
 
@@ -253,7 +295,9 @@ export class OcppConnection {
   private db: SettlementDb | undefined;
   // CSMS-assigned transactionId → VoltSense session id, so StopTransaction can
   // find its session without relying on optional/absent OCPP fields (§1.4.4).
-  private activeTransactions: Map<number, string> = new Map();
+  // lastMeterWh tracks the latest Energy.Active.Import.Register reading (Wh)
+  // seen via MeterValues, used for prepaid kWh cutoff enforcement.
+  private activeTransactions: Map<number, { sessionId: string; lastMeterWh: number }> = new Map();
 
   constructor(
     chargePointId: string,
@@ -361,6 +405,7 @@ export class OcppConnection {
         return buildCallResultFrame(msg.messageId, {});
       }
       case 'MeterValues':
+        this.trackMeterValues(msg.payload);
         return buildCallResultFrame(msg.messageId, {});
       case 'DiagnosticsStatusNotification':
         return buildCallResultFrame(msg.messageId, {});
@@ -545,7 +590,7 @@ export class OcppConnection {
       })
       .where(eq(schema.sessions.id, session.id));
 
-    this.activeTransactions.set(transactionId, session.id);
+    this.activeTransactions.set(transactionId, { sessionId: session.id, lastMeterWh: payload.meterStart });
   }
 
   // ─── StopTransaction settlement (fire-and-forget) ──────────────────────────
@@ -565,7 +610,7 @@ export class OcppConnection {
   }
 
   private async settleStopTransaction(db: SettlementDb, payload: StopTransactionPayload): Promise<void> {
-    let sessionId = this.activeTransactions.get(payload.transactionId);
+    let sessionId = this.activeTransactions.get(payload.transactionId)?.sessionId;
 
     if (sessionId === undefined) {
       // Render restart recovery: the in-memory map is gone, so fall back to the
@@ -665,6 +710,67 @@ export class OcppConnection {
     });
 
     console.log('[voltsense:ocpp] settlement outcome', JSON.stringify(settlementResult));
+  }
+
+  // ─── MeterValues kWh cutoff enforcement (fire-and-forget) ──────────────────
+  // No matching activeTransactions entry (untracked transaction, e.g. simulation
+  // harness with no db) → record nothing and skip cutoff checks.
+
+  private trackMeterValues(payload: unknown): void {
+    if (!isMeterValuesPayload(payload) || payload.transactionId === undefined) {
+      return;
+    }
+    const tracked = this.activeTransactions.get(payload.transactionId);
+    if (tracked === undefined) {
+      return;
+    }
+    const lastMeterWh = extractEnergyActiveImportWh(payload);
+    if (lastMeterWh === null) {
+      return;
+    }
+    tracked.lastMeterWh = lastMeterWh;
+
+    if (this.db === undefined) {
+      return;
+    }
+    const db = this.db;
+    const transactionId = payload.transactionId;
+    void this.checkKwhCutoff(db, transactionId, tracked.sessionId, lastMeterWh).catch((err: unknown) => {
+      console.error(
+        `[voltsense:ocpp] failed to check kWh cutoff: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  }
+
+  private async checkKwhCutoff(
+    db: SettlementDb,
+    transactionId: number,
+    sessionId: string,
+    lastMeterWh: number,
+  ): Promise<void> {
+    const rows = await db
+      .select({ maxKwh: schema.sessions.maxKwh, meterStartWh: schema.sessions.meterStartWh })
+      .from(schema.sessions)
+      .where(eq(schema.sessions.id, sessionId))
+      .limit(1);
+
+    const session = rows[0];
+    if (session === undefined || session.maxKwh === null) {
+      // PKG_FULL / no limit — nothing to enforce.
+      return;
+    }
+
+    const meterStartWh = session.meterStartWh ?? 0;
+    const cutoffWh = new Decimal(session.maxKwh).times(1000).plus(meterStartWh);
+
+    if (new Decimal(lastMeterWh).lt(cutoffWh)) {
+      return;
+    }
+
+    await this.sendCall('RemoteStopTransaction', { transactionId });
+    console.log(
+      `[voltsense:ocpp] kWh limit reached — auto-stopping transactionId=${transactionId} sessionId=${sessionId}`,
+    );
   }
 
   // ─── CallResult / CallError routing ────────────────────────────────────────

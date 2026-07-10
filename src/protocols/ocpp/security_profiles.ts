@@ -1,6 +1,8 @@
 // OCPP 1.6J Security Profiles — WebSocket handshake authentication contract
 // Profiles 1 and 2 only (VoltSense pilot scope). No Profile 0 (open) in production.
 
+import { timingSafeEqual } from 'node:crypto';
+
 // ─── Profile ID enum (OCPP 1.6 Appendix 5) ───────────────────────────────────
 
 export const OCPP_SECURITY_PROFILE_ID = {
@@ -112,12 +114,49 @@ export function assertSecurityProfile(
 
 // ─── Handshake validation ────────────────────────────────────────────────────
 
+// Read once at module load — these are static process configuration, not
+// per-request state. Logged loudly if absent so a misconfigured deploy is
+// impossible to miss, without crashing local/dev usage that has no charger
+// auth configured yet (see fallback below).
+const configuredAuthUser = process.env['OCPP_AUTH_USER'];
+const configuredAuthPassword = process.env['OCPP_AUTH_PASSWORD'];
+
+if (configuredAuthUser === undefined || configuredAuthPassword === undefined) {
+  console.error(
+    '[voltsense:ocpp] OCPP_AUTH_USER or OCPP_AUTH_PASSWORD not set — ' +
+      'WebSocket auth is disabled. Set these before going live.',
+  );
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const leftBuf = Buffer.from(left, 'utf8');
+  const rightBuf = Buffer.from(right, 'utf8');
+  if (leftBuf.length !== rightBuf.length) {
+    return false;
+  }
+  return timingSafeEqual(leftBuf, rightBuf);
+}
+
 export function validateHandshakeCredentials(
   creds: OcppHandshakeCredentials,
 ): void {
   if (isProfile1Credentials(creds)) {
     if (creds.username.length === 0 || creds.password.length === 0) {
       throw new Error('[OCPP SECURITY] Profile 1 requires non-empty username and password');
+    }
+
+    if (configuredAuthUser === undefined || configuredAuthPassword === undefined) {
+      // Startup warning already logged above — accept-all so local dev
+      // without the env vars configured keeps working.
+      return;
+    }
+
+    const usernameMatches = constantTimeEqual(creds.username, configuredAuthUser);
+    const passwordMatches = constantTimeEqual(creds.password, configuredAuthPassword);
+    if (!usernameMatches || !passwordMatches) {
+      throw new Error(
+        '[OCPP SECURITY] Profile 1 credentials do not match configured OCPP_AUTH_USER/OCPP_AUTH_PASSWORD',
+      );
     }
     return;
   }
