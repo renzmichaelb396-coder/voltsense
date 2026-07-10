@@ -92,8 +92,8 @@ const PHYSICAL_BESEN_STATE: HardwareTestState = {
 
 export const ACTIVE_HARDWARE_CONFIG: OcppHardwareConfig = {
   wsPort: loadOcppWsPortFromEnv(),
-  testState: MOCK_HARNESS_STATE,
-  // testState: PHYSICAL_BESEN_STATE,  // uncomment when BESEN unit is on the bench
+  // testState: MOCK_HARNESS_STATE,
+  testState: PHYSICAL_BESEN_STATE,
 };
 
 export { MOCK_HARNESS_STATE, PHYSICAL_BESEN_STATE };
