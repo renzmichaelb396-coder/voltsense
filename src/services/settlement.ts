@@ -52,7 +52,7 @@ export type SettlementDb = PgDatabase<PgQueryResultHKT>;
 // Well-known UUID for VoltSense's platform vault in account_balances.
 // Must be seeded in the database before settlement runs.
 
-const PLATFORM_ACCOUNT_ID = '00000000-0000-0000-0000-000000000001' as const;
+export const PLATFORM_ACCOUNT_ID = '00000000-0000-0000-0000-000000000001' as const;
 
 // ─── Result type ──────────────────────────────────────────────────────────────
 // All amounts are NUMERIC(18,6) string representations — never JS numbers.
@@ -66,24 +66,27 @@ export type RevenueSplitResult = {
   duReservePhp: string;
 };
 
-// ─── Split invariant assertion ────────────────────────────────────────────────
-// Unconditional: throws if (host_share + platform_share) diverges from energy_charge
-// by more than 0.000001 PHP. Catches formula regressions before any DB mutation commits.
+// ─── Settlement invariant assertion ──────────────────────────────────────────
+// Unconditional: throws if (host_share + platform_share_net + psp_fee) diverges
+// from energy_charge by more than 0.000001 PHP. Platform absorbs the PSP fee, so
+// the three-way split — not host + platform alone — must reconstitute energy_charge.
+// Catches formula regressions before any DB mutation commits.
 // Computed on unrounded Decimal values to ensure sub-cent precision (R-01, R-02).
 
-function assertSplitInvariant(
+function assertSettlementInvariant(
   hostShare: Decimal,
-  platformShare: Decimal,
+  platformShareNet: Decimal,
+  pspFee: Decimal,
   energyCharge: Decimal,
 ): void {
-  const splitSum = hostShare.plus(platformShare);
+  const splitSum = hostShare.plus(platformShareNet).plus(pspFee);
   const delta = energyCharge.minus(splitSum).abs();
   const TOLERANCE = new Decimal('0.000001');
 
   if (delta.greaterThan(TOLERANCE)) {
     throw new Error(
       `[SPLIT INVARIANT VIOLATION] ` +
-      `host=${hostShare.toFixed(6)} + platform=${platformShare.toFixed(6)} ` +
+      `host=${hostShare.toFixed(6)} + platformNet=${platformShareNet.toFixed(6)} + pspFee=${pspFee.toFixed(6)} ` +
       `= ${splitSum.toFixed(6)}, expected energy_charge=${energyCharge.toFixed(6)}, ` +
       `delta=${delta.toFixed(8)} exceeds tolerance 0.000001`,
     );
@@ -145,6 +148,22 @@ export async function executeRevenueSplit(
         `[SETTLEMENT] Session not found: sessionId=${payment.sessionId} paymentId=${paymentId}`,
       );
     }
+
+    // ── Idempotency guard: a repeat StopTransaction must never re-run the split ──
+    // executeRevenueSplit already committed for this session iff energyChargePhp is
+    // set (Step 9 below is the only writer). Replaying past this point would
+    // double-credit host/platform balances and duplicate ledger rows.
+    if (session.energyChargePhp !== null) {
+      return {
+        sessionId: session.id,
+        energyChargePhp: session.energyChargePhp,
+        pspFeePhp: session.pspFeePhp ?? '0',
+        hostSharePhp: session.hostSharePhp ?? '0',
+        platformSharePhp: session.platformSharePhp ?? '0',
+        duReservePhp: session.duReservePhp ?? '0',
+      };
+    }
+
     if (session.kwhDelivered === null) {
       throw new Error(
         `[SETTLEMENT] kwhDelivered is null on session=${session.id} — ` +
@@ -182,25 +201,29 @@ export async function executeRevenueSplit(
     // platform_share = kwh × platform_fee_per_kwh + platform_fee_flat (§1.4.4)
     const platformShareDec = kwh.times(platformPerKwh).plus(platformFlat);
 
+    // platform_share_net = platform_share − psp_fee — the platform absorbs the PSP
+    // fee rather than it going unaccounted for between host and platform (§1.4.4).
+    const platformShareNetDec = platformShareDec.minus(pspFeeDec);
+
     // du_reserve = kwh × du_rate — Meralco accrual within host_share (§1.4.4, §1.4.6)
     const duReserveDec = kwh.times(duRate);
 
     // net_collect = energy_charge − psp_fee — amount entering the split pool (§1.4.4)
     const netCollectDec = energyChargeDec.minus(pspFeeDec);
 
-    // ── Step 5: Unconditional split invariant assert (§1.4.4) ──────────────────
-    // host_share + platform_share = energy_charge holds exactly in Decimal.js
-    // because no intermediate rounding has been applied yet.
+    // ── Step 5: Unconditional settlement invariant assert (§1.4.4) ──────────────
+    // host_share + platform_share_net + psp_fee = energy_charge holds exactly in
+    // Decimal.js because no intermediate rounding has been applied yet.
     // Throws inside the transaction — any violation triggers full rollback.
 
-    assertSplitInvariant(hostShareDec, platformShareDec, energyChargeDec);
+    assertSettlementInvariant(hostShareDec, platformShareNetDec, pspFeeDec, energyChargeDec);
 
     // Round all values to 6 decimal places for DB storage (NUMERIC(18,6))
     const energyChargePhp = energyChargeDec.toDecimalPlaces(6).toFixed(6);
     const pspFeePhp = pspFeeDec.toDecimalPlaces(6).toFixed(6);
     const netCollectPhp = netCollectDec.toDecimalPlaces(6).toFixed(6);
     const hostSharePhp = hostShareDec.toDecimalPlaces(6).toFixed(6);
-    const platformSharePhp = platformShareDec.toDecimalPlaces(6).toFixed(6);
+    const platformSharePhp = platformShareNetDec.toDecimalPlaces(6).toFixed(6);
     const duReservePhp = duReserveDec.toDecimalPlaces(6).toFixed(6);
 
     // Host account ID: in v1 the stationId (siteId) is used as the host account key.

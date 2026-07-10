@@ -13,6 +13,7 @@ import { z } from 'zod';
 import * as schema from '../db/schema.js';
 import { createPaymentLink, loadPayMongoConfigFromEnv } from '../services/paymongo.js';
 import type { SettlementDb } from '../services/settlement.js';
+import { ADMIN_ROUTES } from './admin_routes.js';
 import { getConnectedChargePoints, sendRemoteStartTransaction } from './ocpp_ws.js';
 import { verifyPayMongoWebhookSignature } from '../webhooks/crypto.js';
 import {
@@ -598,6 +599,7 @@ export const ROUTE_TABLE: readonly RouteDefinition[] = [
     auth: 'protected',
     handler: handleDevTools,
   },
+  ...ADMIN_ROUTES,
   {
     method: 'POST',
     pathname: '/webhooks/gcash',
