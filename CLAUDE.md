@@ -34,11 +34,11 @@ Context loaded. Open deficiencies listed. Ready to work.
 
 ### Supabase
 - **Project:** uwalsvtegdgwveaejpep (ap-southeast-1, voltsense-csms)
-- **Pooler URL:** `aws-1-ap-southeast-1.pooler.supabase.com:5432` (NOT aws-0)
-- **DB password:** <redacted — see Render dashboard> (rotated 2026-07-04, no special chars needing URL encoding)
+- **Pooler URL:** `aws-1-ap-southeast-1.pooler.supabase.com:6543` (NOT aws-0; port 6543 = transaction pooler, NOT 5432)
+- **DB password:** <redacted — see Render dashboard> (rotated 2026-07-06; if Render 500s with "password authentication failed", reset password in Supabase → update Render DATABASE_URL immediately in same session)
 
 ### Environment Variables (Render + .env)
-- `DATABASE_URL` — postgresql://postgres.uwalsvtegdgwveaejpep:<password>@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres
+- `DATABASE_URL` — postgresql://postgres.uwalsvtegdgwveaejpep:<password>@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres (confirmed working 2026-07-06)
 - `PAYMONGO_SECRET_KEY` — sk_test_<redacted> (swap for sk_live_ on approval)
 - `PAYMONGO_WEBHOOK_SECRET` — whsk_<redacted> (test mode)
 - `VOLTSENSE_SHIELD_USER` — admin
@@ -75,7 +75,7 @@ Context loaded. Open deficiencies listed. Ready to work.
 - On approval: swap sk_test_→sk_live_, register live webhook, update PAYMONGO_WEBHOOK_SECRET in Render
 
 ### Commits (2026-07-04 → 2026-07-05)
-4a4533b → a335ea8 → 141a6eb → 524265f → a271222 → 7973b62 → 5d348f0 → **b480a72 / 60c12e2**
+4a4533b → a335ea8 → 141a6eb → 524265f → a271222 → 7973b62 → 5d348f0 → b480a72 → 60c12e2 → **15c4ee6**
 
 ### DB Schema — sessions table additions (2026-07-05)
 - `ocpp_transaction_id integer` — applied manually via Supabase SQL editor (IF NOT EXISTS). Persists CSMS transactionId so StopTransaction settlement survives Render restarts. No drizzle-kit migrate in this repo — all migrations via Supabase SQL editor directly.
