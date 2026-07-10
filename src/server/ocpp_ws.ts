@@ -265,6 +265,13 @@ async function handleConnection(
   urlSegment: string,
   db: SettlementDb,
 ): Promise<void> {
+  // Buffer frames that arrive during async DB setup so BootNotification
+  // is not silently dropped if the charger sends immediately on open.
+  const pendingFrames: string[] = [];
+  socket.on('message', (data: RawData) => {
+    pendingFrames.push(rawDataToText(data));
+  });
+
   const chargePointId = await resolveChargePointId(db, urlSegment);
   const registryStatus = await lookupChargePointRegistryStatus(db, chargePointId);
   const registryLookup: ChargePointRegistryLookup = () => registryStatus;
@@ -279,6 +286,14 @@ async function handleConnection(
   liveConnections.set(chargePointId, connection);
   connection.onOpen();
 
+  // Replay buffered frames before switching to the live handler
+  for (const frame of pendingFrames) {
+    const response = connection.onRawFrame(frame);
+    if (response !== null) socket.send(response);
+  }
+
+  // Replace buffer handler with live handler
+  socket.removeAllListeners('message');
   socket.on('message', (data: RawData) => {
     const response = connection.onRawFrame(rawDataToText(data));
     if (response !== null) {
