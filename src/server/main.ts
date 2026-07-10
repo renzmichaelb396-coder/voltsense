@@ -6,6 +6,19 @@ import { startHttpServerFromEnv } from './http.js';
 import { startOcppWsListener } from './ocpp_ws.js';
 import { ACTIVE_HARDWARE_CONFIG } from '../protocols/ocpp/hardware_config.js';
 
+// P1 §20: fail fast at boot in production instead of surfacing missing
+// PayMongo/DB config only when the first live webhook or payment arrives.
+function assertProductionEnv(): void {
+  if (process.env['NODE_ENV'] !== 'production') return;
+  const required = ['DATABASE_URL', 'PAYMONGO_SECRET_KEY', 'PAYMONGO_WEBHOOK_SECRET'];
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    throw new Error(`[voltsense:startup] Missing required env vars: ${missing.join(', ')}`);
+  }
+}
+
+assertProductionEnv();
+
 const db = loadDbFromEnv();
 const server = startHttpServerFromEnv(db);
 

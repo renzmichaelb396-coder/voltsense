@@ -126,7 +126,8 @@ function extractEnergyActiveImportWh(payload: MeterValuesPayload): number | null
   let result: number | null = null;
   for (const entry of payload.meterValue) {
     for (const sampled of entry.sampledValue) {
-      if (sampled.measurand !== 'Energy.Active.Import.Register') continue;
+      const measurand = sampled.measurand ?? 'Energy.Active.Import.Register';
+      if (measurand !== 'Energy.Active.Import.Register') continue;
       const raw = Number(sampled.value);
       if (Number.isNaN(raw)) continue;
       result = sampled.unit === 'kWh' ? raw * 1000 : raw;

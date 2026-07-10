@@ -115,13 +115,18 @@ export function assertSecurityProfile(
 // ─── Handshake validation ────────────────────────────────────────────────────
 
 // Read once at module load — these are static process configuration, not
-// per-request state. Logged loudly if absent so a misconfigured deploy is
-// impossible to miss, without crashing local/dev usage that has no charger
-// auth configured yet (see fallback below).
+// per-request state. In production, missing credentials crash the server at
+// boot rather than silently falling back to accept-all auth (P0 §18).
 const configuredAuthUser = process.env['OCPP_AUTH_USER'];
 const configuredAuthPassword = process.env['OCPP_AUTH_PASSWORD'];
 
 if (configuredAuthUser === undefined || configuredAuthPassword === undefined) {
+  if (process.env['NODE_ENV'] === 'production') {
+    throw new Error(
+      '[OCPP SECURITY] OCPP_AUTH_USER and OCPP_AUTH_PASSWORD must be set in production. ' +
+        'Server cannot start without them.',
+    );
+  }
   console.error(
     '[voltsense:ocpp] OCPP_AUTH_USER or OCPP_AUTH_PASSWORD not set — ' +
       'WebSocket auth is disabled. Set these before going live.',
@@ -146,8 +151,8 @@ export function validateHandshakeCredentials(
     }
 
     if (configuredAuthUser === undefined || configuredAuthPassword === undefined) {
-      // Startup warning already logged above — accept-all so local dev
-      // without the env vars configured keeps working.
+      // Unreachable in production — the module-load check above throws first.
+      // dev/test: accept non-empty creds without checking specific values.
       return;
     }
 

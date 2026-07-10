@@ -234,6 +234,18 @@ async function handlePayMongoWebhook(ctx: RequestContext): Promise<HttpResponse>
   const { session, payment } = match;
 
   if (isPayMongoPaidEvent(event)) {
+    if (payment.status === 'paid') {
+      console.warn(
+        `[voltsense:paymongo-webhook] duplicate paid event, skipping paymentId=${event.paymentId}`,
+      );
+      return jsonResponse(202, {
+        accepted: true,
+        psp: 'paymongo',
+        event: event.event,
+        duplicate: true,
+      });
+    }
+
     await ctx.db
       .update(schema.payments)
       .set({
@@ -435,6 +447,19 @@ const CheckoutRequestSchema = z.object({
   idTag: z.string().min(1),
 });
 
+// Thrown inside the checkout transaction when PayMongo link creation fails,
+// so the session/payment inserts roll back instead of leaving an orphaned
+// awaiting_payment session with no way to ever pay it (P1 §14).
+class CheckoutPaymentLinkError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'CheckoutPaymentLinkError';
+  }
+}
+
 async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
   const bodyParsed = CheckoutRequestSchema.safeParse(parseJsonBody(ctx.rawBody));
   if (!bodyParsed.success) {
@@ -485,60 +510,72 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
 
   const computedAmountPhp = computePackagePrices(tariff)[packageId];
 
-  const insertedSessions = await ctx.db
-    .insert(schema.sessions)
-    .values({
-      chargePointId,
-      connectorId,
-      status: 'awaiting_payment',
-      idTag,
-      packageId,
-      snapshotDuRatePerKwh: tariff.duRatePerKwh,
-      snapshotHostMarginPerKwh: tariff.hostMarginPerKwh,
-      snapshotPlatformFeePerKwh: tariff.platformFeePerKwh,
-      snapshotPlatformFeeFlatPhp: tariff.platformFeeFlatPhp,
-      snapshotPspFeeRate: tariff.pspFeeRate,
-      maxKwh: PACKAGE_MAX_KWH[packageId],
-      holdAmountPhp: computedAmountPhp,
-      authExpiresAt: new Date(Date.now() + CHECKOUT_AUTH_WINDOW_MS),
-    })
-    .returning({ id: schema.sessions.id });
+  let checkoutResult: { sessionId: string; checkoutUrl: string };
+  try {
+    checkoutResult = await ctx.db.transaction(async (tx) => {
+      const insertedSessions = await tx
+        .insert(schema.sessions)
+        .values({
+          chargePointId,
+          connectorId,
+          status: 'awaiting_payment',
+          idTag,
+          packageId,
+          snapshotDuRatePerKwh: tariff.duRatePerKwh,
+          snapshotHostMarginPerKwh: tariff.hostMarginPerKwh,
+          snapshotPlatformFeePerKwh: tariff.platformFeePerKwh,
+          snapshotPlatformFeeFlatPhp: tariff.platformFeeFlatPhp,
+          snapshotPspFeeRate: tariff.pspFeeRate,
+          maxKwh: PACKAGE_MAX_KWH[packageId],
+          holdAmountPhp: computedAmountPhp,
+          authExpiresAt: new Date(Date.now() + CHECKOUT_AUTH_WINDOW_MS),
+        })
+        .returning({ id: schema.sessions.id });
 
-  const session = insertedSessions[0];
-  if (session === undefined) {
-    throw new Error('[voltsense:checkout] sessions insert returned no row');
-  }
+      const session = insertedSessions[0];
+      if (session === undefined) {
+        throw new Error('[voltsense:checkout] sessions insert returned no row');
+      }
 
-  const linkResult = await createPaymentLink(
-    {
-      amountPhp: computedAmountPhp,
-      referenceNumber: session.id,
-      description: `VoltSense charging session — ${site.name}`,
-    },
-    paymongoConfig,
-  );
+      const linkResult = await createPaymentLink(
+        {
+          amountPhp: computedAmountPhp,
+          referenceNumber: session.id,
+          description: `VoltSense charging session — ${site.name}`,
+        },
+        paymongoConfig,
+      );
 
-  if (linkResult.outcome === 'failure') {
-    return jsonResponse(502, {
-      error: 'paymongo_link_creation_failed',
-      code: linkResult.errorCode,
-      message: linkResult.errorMessage,
+      if (linkResult.outcome === 'failure') {
+        throw new CheckoutPaymentLinkError(linkResult.errorCode, linkResult.errorMessage);
+      }
+
+      await tx.insert(schema.payments).values({
+        sessionId: session.id,
+        psp: 'paymongo',
+        externalId: '',
+        idempotencyKey: session.id,
+        amountPhp: computedAmountPhp,
+        status: 'pending',
+        rawPayload: {},
+      });
+
+      return { sessionId: session.id, checkoutUrl: linkResult.checkoutUrl };
     });
+  } catch (err) {
+    if (err instanceof CheckoutPaymentLinkError) {
+      return jsonResponse(502, {
+        error: 'paymongo_link_creation_failed',
+        code: err.code,
+        message: err.message,
+      });
+    }
+    throw err;
   }
-
-  await ctx.db.insert(schema.payments).values({
-    sessionId: session.id,
-    psp: 'paymongo',
-    externalId: '',
-    idempotencyKey: session.id,
-    amountPhp: computedAmountPhp,
-    status: 'pending',
-    rawPayload: {},
-  });
 
   return jsonResponse(201, {
-    sessionId: session.id,
-    checkoutUrl: linkResult.checkoutUrl,
+    sessionId: checkoutResult.sessionId,
+    checkoutUrl: checkoutResult.checkoutUrl,
   });
 }
 
