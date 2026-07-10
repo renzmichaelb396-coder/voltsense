@@ -39,6 +39,7 @@ export const sessionStatusEnum = pgEnum('session_status', [
   'payment_cleared',
   'authorized',
   'charging',
+  'lost_transaction',
   'paid_charger_offline',
   'completed',
   'cancelled',

@@ -2,7 +2,7 @@
 // Inspector rule: action: string or payload: any in this file = P0 weld violation.
 
 import { Decimal } from 'decimal.js';
-import { and, asc, desc, eq, gt, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull } from 'drizzle-orm';
 
 import * as schema from '../../db/schema.js';
 import { executeRevenueSplitOrRefund, type SettlementDb } from '../../services/settlement.js';
@@ -127,7 +127,7 @@ function extractEnergyActiveImportWh(payload: MeterValuesPayload): number | null
   for (const entry of payload.meterValue) {
     for (const sampled of entry.sampledValue) {
       const measurand = sampled.measurand ?? 'Energy.Active.Import.Register';
-      if (measurand !== 'Energy.Active.Import.Register') continue;
+      if (measurand !== 'Energy.Active.Import.Register' && measurand !== 'Energy') continue;
       const raw = Number(sampled.value);
       if (Number.isNaN(raw)) continue;
       result = sampled.unit === 'kWh' ? raw * 1000 : raw;
@@ -299,6 +299,8 @@ export class OcppConnection {
   // lastMeterWh tracks the latest Energy.Active.Import.Register reading (Wh)
   // seen via MeterValues, used for prepaid kWh cutoff enforcement.
   private activeTransactions: Map<number, { sessionId: string; lastMeterWh: number }> = new Map();
+  // One-shot latch to prevent repeated RemoteStopTransaction sends for the same tx.
+  private _stopSentForTx: Set<number> = new Set();
 
   constructor(
     chargePointId: string,
@@ -505,7 +507,7 @@ export class OcppConnection {
           // Includes 'paid_charger_offline' (set by sendRemoteStartTransaction
           // when this charge point was unreachable) so reconnect actually
           // catches those sessions, not just fresh 'payment_cleared' ones.
-          inArray(schema.sessions.status, ['payment_cleared', 'paid_charger_offline']),
+          inArray(schema.sessions.status, ['payment_cleared', 'paid_charger_offline', 'charging']),
           gt(schema.sessions.authExpiresAt, new Date()),
         ),
       )
@@ -513,6 +515,11 @@ export class OcppConnection {
       .limit(5);
 
     for (const session of rows) {
+      // If StartTransaction was already persisted, the charger is already holding
+      // an active transaction. Wait for StopTransaction instead of re-issuing RemoteStart.
+      if (session.status === 'charging' && session.ocppTransactionId !== null) {
+        continue;
+      }
       // Sequential, not parallel — keeps retry order stable and avoids bursting
       // RemoteStartTransaction calls at a charge point the instant it reconnects.
       await this.retryRemoteStart(session);
@@ -611,106 +618,135 @@ export class OcppConnection {
   }
 
   private async settleStopTransaction(db: SettlementDb, payload: StopTransactionPayload): Promise<void> {
-    let sessionId = this.activeTransactions.get(payload.transactionId)?.sessionId;
-
-    if (sessionId === undefined) {
-      // Render restart recovery: the in-memory map is gone, so fall back to the
-      // DB-persisted ocppTransactionId set in resolveSessionForStart.
-      const rows = await db
-        .select({ id: schema.sessions.id })
-        .from(schema.sessions)
-        .where(
-          and(
-            eq(schema.sessions.chargePointId, this.chargePointId),
-            eq(schema.sessions.ocppTransactionId, payload.transactionId),
-            eq(schema.sessions.status, 'charging'),
-          ),
-        )
-        .limit(1);
-      sessionId = rows[0]?.id;
-    }
-
-    if (sessionId === undefined) {
-      console.warn(
-        `[voltsense:ocpp] StopTransaction for untracked transactionId=${payload.transactionId} chargePointId=${this.chargePointId}`,
-      );
-      return;
-    }
-    this.activeTransactions.delete(payload.transactionId);
-
-    const sessionRows = await db
-      .select()
-      .from(schema.sessions)
-      .where(eq(schema.sessions.id, sessionId))
-      .limit(1);
-
-    const session = sessionRows[0];
-    if (session === undefined) {
-      console.error(`[voltsense:ocpp] session not found for StopTransaction: sessionId=${sessionId}`);
-      return;
-    }
-
-    const meterStartWh = session.meterStartWh ?? 0;
-    const kwhDelivered = new Decimal(payload.meterStop - meterStartWh)
-      .div(1000)
-      .toDecimalPlaces(6)
-      .toFixed(6);
-
-    await db
-      .update(schema.sessions)
-      .set({
-        meterStopWh: payload.meterStop,
-        kwhDelivered,
-        stoppedAt: new Date(),
-        status: 'completed',
-        updatedAt: new Date(),
-      })
-      .where(eq(schema.sessions.id, session.id));
-
-    const paymentRows = await db
-      .select()
-      .from(schema.payments)
-      .where(and(eq(schema.payments.sessionId, session.id), eq(schema.payments.status, 'paid')))
-      .orderBy(desc(schema.payments.paidAt))
-      .limit(1);
-
-    const payment = paymentRows[0];
-    if (payment === undefined) {
-      console.error(`[voltsense:ocpp] no paid payment found for session=${session.id} — cannot settle`);
-      return;
-    }
-
-    const chargePointRows = await db
-      .select({ siteId: schema.chargePoints.siteId })
-      .from(schema.chargePoints)
-      .where(eq(schema.chargePoints.id, this.chargePointId))
-      .limit(1);
-
-    const stationId = chargePointRows[0]?.siteId;
-    if (stationId === undefined) {
-      console.error(`[voltsense:ocpp] charge point not found: chargePointId=${this.chargePointId}`);
-      return;
-    }
-
-    let refundConfig;
     try {
-      refundConfig = loadRefundConfigFromEnv();
-    } catch (err) {
-      console.error(`[voltsense:ocpp] refund config error: ${err instanceof Error ? err.message : String(err)}`);
-      return;
+      let sessionId = this.activeTransactions.get(payload.transactionId)?.sessionId;
+
+      if (sessionId === undefined) {
+        // Render restart recovery: in-memory map is gone, so fall back to DB lookup.
+        const rows = await db
+          .select({ id: schema.sessions.id })
+          .from(schema.sessions)
+          .where(
+            and(
+              eq(schema.sessions.ocppTransactionId, payload.transactionId),
+              eq(schema.sessions.status, 'charging'),
+            ),
+          )
+          .limit(1);
+        sessionId = rows[0]?.id;
+      }
+
+      if (sessionId === undefined) {
+        const orphanRows = await db
+          .select({ id: schema.sessions.id })
+          .from(schema.sessions)
+          .where(
+            and(
+              eq(schema.sessions.chargePointId, this.chargePointId),
+              eq(schema.sessions.status, 'charging'),
+              isNull(schema.sessions.ocppTransactionId),
+            ),
+          )
+          .orderBy(desc(schema.sessions.startedAt))
+          .limit(1);
+        const orphan = orphanRows[0];
+        if (orphan !== undefined) {
+          await db
+            .update(schema.sessions)
+            .set({
+              status: 'lost_transaction',
+              stoppedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(schema.sessions.id, orphan.id));
+          console.warn(
+            `[voltsense:ocpp] StopTransaction tx=${payload.transactionId} had no matching ocpp_transaction_id; marked session=${orphan.id} as lost_transaction`,
+          );
+        } else {
+          console.warn(
+            `[voltsense:ocpp] StopTransaction for untracked transactionId=${payload.transactionId} chargePointId=${this.chargePointId} (no charging session to mark lost_transaction)`,
+          );
+        }
+        return;
+      }
+      this.activeTransactions.delete(payload.transactionId);
+
+      const sessionRows = await db
+        .select()
+        .from(schema.sessions)
+        .where(eq(schema.sessions.id, sessionId))
+        .limit(1);
+
+      const session = sessionRows[0];
+      if (session === undefined) {
+        console.error(`[voltsense:ocpp] session not found for StopTransaction: sessionId=${sessionId}`);
+        return;
+      }
+
+      const meterStartWh = session.meterStartWh ?? 0;
+      const kwhDelivered = new Decimal(payload.meterStop - meterStartWh)
+        .div(1000)
+        .toDecimalPlaces(6)
+        .toFixed(6);
+
+      await db
+        .update(schema.sessions)
+        .set({
+          meterStopWh: payload.meterStop,
+          kwhDelivered,
+          stoppedAt: new Date(),
+          status: 'completed',
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.sessions.id, session.id));
+
+      const paymentRows = await db
+        .select()
+        .from(schema.payments)
+        .where(and(eq(schema.payments.sessionId, session.id), eq(schema.payments.status, 'paid')))
+        .orderBy(desc(schema.payments.paidAt))
+        .limit(1);
+
+      const payment = paymentRows[0];
+      if (payment === undefined) {
+        console.error(`[voltsense:ocpp] no paid payment found for session=${session.id} — cannot settle`);
+        return;
+      }
+
+      const chargePointRows = await db
+        .select({ siteId: schema.chargePoints.siteId })
+        .from(schema.chargePoints)
+        .where(eq(schema.chargePoints.id, this.chargePointId))
+        .limit(1);
+
+      const stationId = chargePointRows[0]?.siteId;
+      if (stationId === undefined) {
+        console.error(`[voltsense:ocpp] charge point not found: chargePointId=${this.chargePointId}`);
+        return;
+      }
+
+      let refundConfig;
+      try {
+        refundConfig = loadRefundConfigFromEnv();
+      } catch (err) {
+        console.error(`[voltsense:ocpp] refund config error: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+
+      const settlementResult = await executeRevenueSplitOrRefund({
+        db,
+        paymentId: payment.id,
+        totalAmount: payment.amountPhp,
+        stationId,
+        psp: payment.psp,
+        externalId: payment.externalId,
+        refundConfig,
+      });
+
+      console.log('[voltsense:ocpp] settlement outcome', JSON.stringify(settlementResult));
+    } finally {
+      this._stopSentForTx.delete(payload.transactionId);
     }
-
-    const settlementResult = await executeRevenueSplitOrRefund({
-      db,
-      paymentId: payment.id,
-      totalAmount: payment.amountPhp,
-      stationId,
-      psp: payment.psp,
-      externalId: payment.externalId,
-      refundConfig,
-    });
-
-    console.log('[voltsense:ocpp] settlement outcome', JSON.stringify(settlementResult));
   }
 
   // ─── MeterValues kWh cutoff enforcement (fire-and-forget) ──────────────────
@@ -768,7 +804,16 @@ export class OcppConnection {
       return;
     }
 
-    await this.sendCall('RemoteStopTransaction', { transactionId });
+    if (this._stopSentForTx.has(transactionId)) {
+      return;
+    }
+    this._stopSentForTx.add(transactionId);
+    try {
+      await this.sendCall('RemoteStopTransaction', { transactionId });
+    } catch (err) {
+      this._stopSentForTx.delete(transactionId);
+      throw err;
+    }
     console.log(
       `[voltsense:ocpp] kWh limit reached — auto-stopping transactionId=${transactionId} sessionId=${sessionId}`,
     );

@@ -52,7 +52,7 @@ async function preflight() {
   console.log('');
   console.log('  Step 4: Set URL — pick WSS (not WS), then enter:');
   console.log('');
-  console.log('          wss://voltsense-pmfq.onrender.com/ocpp/' + AUTH_USER);
+  console.log('          wss://voltsense-pmfq.onrender.com/ocpp/VS-MAN-001');
   console.log('');
   console.log('  Step 5: ChargerID field → enter:  ' + AUTH_USER);
   console.log('');
