@@ -20,6 +20,15 @@ import {
 
 const REALM = 'VoltSense Secure Surface';
 
+// Paths the browser (charge.html on Vercel) is allowed to call directly.
+const CORS_PUBLIC_PATHS: ReadonlySet<string> = new Set(['/checkout', '/health', '/ocpp/status']);
+
+const CORS_HEADERS: Readonly<Record<string, string>> = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
 const SUPPORTED_METHODS: ReadonlySet<string> = new Set([
   'GET',
   'POST',
@@ -92,6 +101,14 @@ export function createVoltSenseHttpServer(options: HttpServerOptions) {
       }
 
       const pathname = requestUrl.pathname;
+
+      // Handle CORS preflight for public browser-facing endpoints.
+      if (method === 'OPTIONS' && CORS_PUBLIC_PATHS.has(pathname)) {
+        res.writeHead(204, CORS_HEADERS);
+        res.end();
+        return;
+      }
+
       if (!enforceShield(req, method, pathname, options.credentials)) {
         sendUnauthorized(res);
         return;
@@ -105,7 +122,13 @@ export function createVoltSenseHttpServer(options: HttpServerOptions) {
         rawBody,
         db: options.db,
       });
-      writeHttpResponse(res, response);
+
+      // Inject CORS headers on public paths so the browser accepts the response.
+      const finalResponse = CORS_PUBLIC_PATHS.has(pathname)
+        ? { ...response, headers: { ...response.headers, ...CORS_HEADERS } }
+        : response;
+
+      writeHttpResponse(res, finalResponse);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'internal_server_error';
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
