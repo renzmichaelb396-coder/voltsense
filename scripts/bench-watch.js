@@ -78,6 +78,12 @@ async function poll() {
         console.log('  ✅  CHARGER CONNECTED!');
         console.log('  ID: ' + d.chargePoints.join(', '));
         console.log('  BootNotification received by server.');
+        console.log('\n⚡ CRITICAL STEP — Set MeterValueSampleInterval');
+        console.log('   In OCPPSetTool → Change Configuration');
+        console.log('   Key:   MeterValueSampleInterval');
+        console.log('   Value: 60');
+        console.log('   Confirm charger responds: Accepted');
+        console.log('   WARNING: Without this, kWh package cutoff will NEVER fire.\n');
         console.log('  BENCH TEST PASSED — ready for Go Hotels.');
         console.log(line('═'));
         process.exit(0);
