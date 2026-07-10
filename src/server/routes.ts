@@ -13,7 +13,7 @@ import { z } from 'zod';
 import * as schema from '../db/schema.js';
 import { createPaymentLink, loadPayMongoConfigFromEnv } from '../services/paymongo.js';
 import type { SettlementDb } from '../services/settlement.js';
-import { sendRemoteStartTransaction } from './ocpp_ws.js';
+import { getConnectedChargePoints, sendRemoteStartTransaction } from './ocpp_ws.js';
 import { verifyPayMongoWebhookSignature } from '../webhooks/crypto.js';
 import {
   isPayMongoFailedEvent,
@@ -558,6 +558,15 @@ function handleHealth(_ctx: RequestContext): HttpResponse {
   return jsonResponse(200, { status: 'ok', ts: Date.now() });
 }
 
+function handleOcppStatus(_ctx: RequestContext): HttpResponse {
+  const connected = getConnectedChargePoints();
+  return {
+    statusCode: 200,
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ connected: connected.length > 0, chargePoints: connected }),
+  };
+}
+
 export const ROUTE_TABLE: readonly RouteDefinition[] = [
   {
     method: 'GET',
@@ -570,6 +579,12 @@ export const ROUTE_TABLE: readonly RouteDefinition[] = [
     pathname: '/health',
     auth: 'public',
     handler: handleHealth,
+  },
+  {
+    method: 'GET',
+    pathname: '/ocpp/status',
+    auth: 'public',
+    handler: handleOcppStatus,
   },
   {
     method: 'GET',

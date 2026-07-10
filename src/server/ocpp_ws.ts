@@ -205,6 +205,11 @@ async function lookupChargePointRegistryStatus(
 
 const liveConnections: Map<string, OcppConnection> = new Map();
 
+// Exposed for GET /ocpp/status — bench test visibility only.
+export function getConnectedChargePoints(): string[] {
+  return Array.from(liveConnections.keys());
+}
+
 // Set once by startOcppWsListener — sendRemoteStartTransaction needs DB access
 // to flag a session as offline, but (like routes.ts's call site) doesn't carry
 // a sessionId, only chargePointId/idTag, so it re-derives the session itself.
