@@ -460,6 +460,16 @@ class CheckoutPaymentLinkError extends Error {
   }
 }
 
+// Thrown inside the checkout transaction when the connector atomic claim fails,
+// meaning a concurrent request already claimed it between our outer SELECT and
+// the in-transaction UPDATE. Rolls back without orphaned data.
+class ConnectorAlreadyClaimedError extends Error {
+  constructor() {
+    super('Connector was claimed by a concurrent request');
+    this.name = 'ConnectorAlreadyClaimedError';
+  }
+}
+
 async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
   const bodyParsed = CheckoutRequestSchema.safeParse(parseJsonBody(ctx.rawBody));
   if (!bodyParsed.success) {
@@ -508,6 +518,9 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
     });
   }
 
+  // connector.id captured here; the atomic claim happens inside the transaction below.
+  const connectorRowId = connector.id;
+
   const siteRows = await ctx.db
     .select({ name: schema.sites.name })
     .from(schema.sites)
@@ -543,6 +556,23 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
   let checkoutResult: { sessionId: string; checkoutUrl: string };
   try {
     checkoutResult = await ctx.db.transaction(async (tx) => {
+      // Atomic claim: UPDATE only if still 'Available'. If another request got here
+      // first, claimed will be empty and we throw to roll back the transaction.
+      const claimed = await tx
+        .update(schema.connectors)
+        .set({ status: 'Reserved' })
+        .where(
+          and(
+            eq(schema.connectors.id, connectorRowId),
+            eq(schema.connectors.status, 'Available'),
+          ),
+        )
+        .returning({ id: schema.connectors.id });
+
+      if (claimed.length === 0) {
+        throw new ConnectorAlreadyClaimedError();
+      }
+
       const insertedSessions = await tx
         .insert(schema.sessions)
         .values({
@@ -593,6 +623,12 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
       return { sessionId: session.id, checkoutUrl: linkResult.checkoutUrl };
     });
   } catch (err) {
+    if (err instanceof ConnectorAlreadyClaimedError) {
+      return jsonResponse(409, {
+        error: 'connector_not_available',
+        message: 'This connector was claimed by a concurrent request.',
+      });
+    }
     if (err instanceof CheckoutPaymentLinkError) {
       return jsonResponse(502, {
         error: 'paymongo_link_creation_failed',
