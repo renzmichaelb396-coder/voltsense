@@ -1,17 +1,19 @@
 // PayMongo webhook inbound type layer — VoltSense payment rail
 // Parse pipeline: rawBody: unknown → Zod schema → PayMongoWebhookPayload
 // Matches PayMongo's nested event envelope:
-//   data.attributes.type          → event type (payment.paid | payment.failed)
+//   data.attributes.type          → event type (payment.paid | payment.failed | checkout_session.payment.paid)
 //   data.attributes.data.attributes → payment resource fields (amount, status, …)
 // No 'any'. Amounts stay as centavo integers at the wire boundary; convert at the edge.
+// NOTE: checkout_session.payment.paid is normalized → payment.paid internally so the rest of
+// the pipeline (session lookup, RemoteStartTransaction) is identical for both event types.
 
 import { z } from 'zod';
 
 // ─── Event type literals ───────────────────────────────────────────────────────
 
-export type PayMongoEventType = 'payment.paid' | 'payment.failed';
+export type PayMongoEventType = 'payment.paid' | 'payment.failed' | 'checkout_session.payment.paid';
 
-const PayMongoEventTypeEnum = z.enum(['payment.paid', 'payment.failed']);
+const PayMongoEventTypeEnum = z.enum(['payment.paid', 'payment.failed', 'checkout_session.payment.paid']);
 
 // ─── Payment source (GCash, Maya, card, …) ───────────────────────────────────
 
@@ -142,7 +144,9 @@ export function normalizePayMongoWebhook(payload: PayMongoWebhookPayload): PayMo
     sourceType: attrs.source?.type,
   } as const;
 
-  if (attributes.type === 'payment.paid') {
+  // checkout_session.payment.paid is treated identically to payment.paid —
+  // same session lookup, same RemoteStartTransaction dispatch.
+  if (attributes.type === 'payment.paid' || attributes.type === 'checkout_session.payment.paid') {
     return {
       ...base,
       event: 'payment.paid',
