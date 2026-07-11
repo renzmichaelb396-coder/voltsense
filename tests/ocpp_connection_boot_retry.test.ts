@@ -124,8 +124,10 @@ describe('OcppConnection BootNotification retry', () => {
     const parsed = JSON.parse(response as string) as [number, string, { status: string }];
     expect(parsed[2].status).toBe('Accepted');
     // Fire-and-forget: the retry sweep is still awaiting the (async) DB lookup
-    // at this point, so nothing should have been sent yet.
-    expect(sent).toHaveLength(0);
+    // at this point, so no RemoteStartTransaction should have been sent yet.
+    // (A ChangeConfiguration frame for MeterValueSampleInterval IS sent
+    // synchronously as part of BootNotification handling — that's expected.)
+    expect(remoteStartFrames(sent)).toHaveLength(0);
   });
 
   it('retries RemoteStartTransaction for each pending session, sequentially', async () => {
