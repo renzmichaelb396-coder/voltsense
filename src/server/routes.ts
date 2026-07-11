@@ -207,13 +207,17 @@ async function handlePayMongoWebhook(ctx: RequestContext): Promise<HttpResponse>
 
   if (event.externalReferenceNumber === null) {
     console.warn(
-      '[voltsense:paymongo-webhook] payment event missing external_reference_number — no payments row to update',
+      '[voltsense:paymongo-webhook] external_reference_number is null — full event:',
+      JSON.stringify({
+        eventId: event.eventId,
+        paymentId: event.paymentId,
+        amountCentavos: event.amountCentavos,
+        paymentIntentId: event.paymentIntentId,
+        sourceType: event.sourceType,
+        livemode: event.livemode,
+      }),
     );
-    return jsonResponse(202, {
-      accepted: true,
-      psp: 'paymongo',
-      error: 'session_not_found',
-    });
+    return jsonResponse(202, { accepted: true, psp: 'paymongo', error: 'missing_reference_number' });
   }
 
   const match = await findSessionPaymentByReferenceNumber(
@@ -617,11 +621,11 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
       await tx.insert(schema.payments).values({
         sessionId: session.id,
         psp: 'paymongo',
-        externalId: '',
+        externalId: linkResult.checkoutUrl,
         idempotencyKey: session.id,
         amountPhp: computedAmountPhp,
         status: 'pending',
-        rawPayload: {},
+        rawPayload: { checkout_session_id: linkResult.sessionId, _url: linkResult.checkoutUrl },
       });
 
       return { sessionId: session.id, checkoutUrl: linkResult.checkoutUrl };
