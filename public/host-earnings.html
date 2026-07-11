@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VoltSense — Go Hotels Earnings</title>
+<meta name="description" content="Go Hotels Mandaluyong earnings summary for the VoltSense EV charger.">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --accent: #22c55e;
+    --accent-dark: #16a34a;
+    --text: #111827;
+    --text-muted: #6b7280;
+    --border: #e5e7eb;
+    --bg: #ffffff;
+    --bg-soft: #f9fafb;
+    --danger: #dc2626;
+    --danger-bg: #fef2f2;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    min-height: 100vh;
+    padding: 1.5rem 1rem 3rem;
+  }
+
+  header {
+    text-align: center;
+    margin-bottom: 1.75rem;
+  }
+
+  header .logo {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--accent-dark);
+  }
+
+  header p {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.35rem;
+  }
+
+  main {
+    max-width: 640px;
+    width: 100%;
+    margin: 0 auto;
+  }
+
+  .state { display: none; }
+  .state.active { display: block; }
+
+  /* ── Login state ─────────────────────────────────────────────── */
+  .login-card {
+    max-width: 360px;
+    margin: 2rem auto 0;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.75rem 1.5rem;
+  }
+
+  .login-card h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 1.25rem;
+    text-align: center;
+  }
+
+  label {
+    display: block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    margin-bottom: 0.35rem;
+  }
+
+  .field { margin-bottom: 1rem; }
+
+  input[type="text"], input[type="password"] {
+    width: 100%;
+    padding: 0.65rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.95rem;
+    color: var(--text);
+    background: var(--bg-soft);
+  }
+
+  input:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--bg);
+  }
+
+  button {
+    width: 100%;
+    padding: 0.75rem;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  button:hover { background: var(--accent-dark); }
+  button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  .login-error {
+    display: none;
+    margin-top: 0.9rem;
+    padding: 0.6rem 0.75rem;
+    border-radius: 8px;
+    background: var(--danger-bg);
+    color: var(--danger);
+    font-size: 0.85rem;
+    text-align: center;
+  }
+  .login-error.active { display: block; }
+
+  /* ── Loading state ───────────────────────────────────────────── */
+  .loading-wrap {
+    text-align: center;
+    padding: 3rem 1rem;
+  }
+
+  .spinner {
+    width: 36px;
+    height: 36px;
+    border: 4px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    margin: 0 auto 1rem;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .loading-wrap p { color: var(--text-muted); font-size: 0.9rem; }
+
+  /* ── Error state ─────────────────────────────────────────────── */
+  .error-wrap {
+    text-align: center;
+    padding: 2.5rem 1rem;
+  }
+
+  .error-wrap .icon {
+    width: 48px;
+    height: 48px;
+    margin: 0 auto 1rem;
+    border-radius: 50%;
+    background: var(--danger-bg);
+    color: var(--danger);
+    display: grid;
+    place-items: center;
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+
+  .error-wrap h2 { font-size: 1.05rem; margin-bottom: 0.5rem; }
+  .error-wrap p { color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1.25rem; }
+  .error-wrap button { max-width: 220px; margin: 0 auto; }
+
+  /* ── Data state ──────────────────────────────────────────────── */
+  .summary {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.75rem;
+    margin-bottom: 1.75rem;
+  }
+
+  .summary-tile {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem 0.75rem;
+    text-align: center;
+    background: var(--bg-soft);
+  }
+
+  .summary-tile .label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    margin-bottom: 0.4rem;
+  }
+
+  .summary-tile .value {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--accent-dark);
+  }
+
+  .table-wrap {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow-x: auto;
+  }
+
+  table { width: 100%; border-collapse: collapse; min-width: 480px; }
+
+  th, td {
+    text-align: left;
+    padding: 0.7rem 0.9rem;
+    font-size: 0.85rem;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  th {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    background: var(--bg-soft);
+  }
+
+  tr:last-child td { border-bottom: none; }
+  td.earnings { color: var(--accent-dark); font-weight: 600; }
+
+  /* ── Empty state ─────────────────────────────────────────────── */
+  .empty-wrap {
+    text-align: center;
+    padding: 2.5rem 1rem;
+    border: 1px dashed var(--border);
+    border-radius: 12px;
+    margin-top: 1rem;
+  }
+
+  .empty-wrap .icon { font-size: 1.75rem; margin-bottom: 0.75rem; }
+  .empty-wrap p { color: var(--text-muted); font-size: 0.9rem; }
+
+  footer {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-top: 2rem;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">⚡ VoltSense — Go Hotels Earnings</div>
+  <p>Charger VS-MAN-001 · Go Hotels Mandaluyong</p>
+</header>
+
+<main>
+
+  <div class="state active" id="loginState">
+    <div class="login-card">
+      <h2>Sign in to view earnings</h2>
+      <form id="loginForm">
+        <div class="field">
+          <label for="username">Username</label>
+          <input type="text" id="username" autocomplete="username" required>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input type="password" id="password" autocomplete="current-password" required>
+        </div>
+        <button type="submit" id="loginButton">View Earnings</button>
+      </form>
+      <div class="login-error" id="loginError">Incorrect username or password.</div>
+    </div>
+  </div>
+
+  <div class="state" id="loadingState">
+    <div class="loading-wrap">
+      <div class="spinner"></div>
+      <p>Loading earnings…</p>
+    </div>
+  </div>
+
+  <div class="state" id="errorState">
+    <div class="error-wrap">
+      <div class="icon">!</div>
+      <h2>Could not load earnings</h2>
+      <p id="errorMessage">Something went wrong. Please try again.</p>
+      <button type="button" id="retryButton">Try Again</button>
+    </div>
+  </div>
+
+  <div class="state" id="dataState">
+    <div class="summary">
+      <div class="summary-tile">
+        <div class="label">Total Sessions</div>
+        <div class="value" id="summarySessions">0</div>
+      </div>
+      <div class="summary-tile">
+        <div class="label">Total kWh</div>
+        <div class="value" id="summaryKwh">0</div>
+      </div>
+      <div class="summary-tile">
+        <div class="label">Total Earnings (PHP)</div>
+        <div class="value" id="summaryEarnings">₱0.00</div>
+      </div>
+    </div>
+
+    <div class="table-wrap" id="tableWrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Session Duration</th>
+            <th>kWh</th>
+            <th>Your Earnings (PHP)</th>
+          </tr>
+        </thead>
+        <tbody id="sessionsBody"></tbody>
+      </table>
+    </div>
+
+    <div class="empty-wrap" id="emptyState" style="display:none">
+      <div class="icon">🔌</div>
+      <p>No sessions yet. Earnings will appear here once guests start charging.</p>
+    </div>
+  </div>
+
+</main>
+
+<footer>Powered by VoltSense</footer>
+
+<script>
+const HOST_EARNINGS_URL = 'https://voltsense-pmfq.onrender.com/host/earnings';
+
+function showState(id) {
+  ['loginState', 'loadingState', 'errorState', 'dataState'].forEach((stateId) => {
+    document.getElementById(stateId).classList.toggle('active', stateId === id);
+  });
+}
+
+function formatDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' }) +
+    ' ' + d.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatDuration(startedAt, completedAt) {
+  if (!startedAt || !completedAt) return '—';
+  const ms = new Date(completedAt).getTime() - new Date(startedAt).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  const totalMinutes = Math.round(ms / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0 ? hours + 'h ' + minutes + 'm' : minutes + 'm';
+}
+
+function formatKwh(value) {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n.toFixed(2) : '0.00';
+}
+
+function formatPhp(value) {
+  const n = Number(value ?? 0);
+  return '₱' + (Number.isFinite(n) ? n.toFixed(2) : '0.00');
+}
+
+function renderEarnings(data) {
+  const summary = data.summary || {};
+  document.getElementById('summarySessions').textContent = summary.totalSessions ?? 0;
+  document.getElementById('summaryKwh').textContent = formatKwh(summary.totalKwhDelivered);
+  document.getElementById('summaryEarnings').textContent = formatPhp(summary.totalHostEarningsPhp);
+
+  const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+  const tableWrap = document.getElementById('tableWrap');
+  const emptyState = document.getElementById('emptyState');
+
+  if (sessions.length === 0) {
+    tableWrap.style.display = 'none';
+    emptyState.style.display = 'block';
+    showState('dataState');
+    return;
+  }
+
+  tableWrap.style.display = 'block';
+  emptyState.style.display = 'none';
+
+  const body = document.getElementById('sessionsBody');
+  body.innerHTML = '';
+  sessions.forEach((s) => {
+    const row = document.createElement('tr');
+
+    const dateCell = document.createElement('td');
+    dateCell.textContent = formatDate(s.completedAt || s.startedAt);
+
+    const durationCell = document.createElement('td');
+    durationCell.textContent = formatDuration(s.startedAt, s.completedAt);
+
+    const kwhCell = document.createElement('td');
+    kwhCell.textContent = formatKwh(s.kwhDelivered);
+
+    const earningsCell = document.createElement('td');
+    earningsCell.className = 'earnings';
+    earningsCell.textContent = formatPhp(s.hostEarningsPhp);
+
+    row.append(dateCell, durationCell, kwhCell, earningsCell);
+    body.appendChild(row);
+  });
+
+  showState('dataState');
+}
+
+async function fetchEarnings(username, password) {
+  showState('loadingState');
+
+  let res;
+  try {
+    res = await fetch(HOST_EARNINGS_URL, {
+      headers: {
+        Authorization: 'Basic ' + btoa(username + ':' + password),
+      },
+    });
+  } catch (err) {
+    document.getElementById('errorMessage').textContent = 'Network error. Check your connection and try again.';
+    showState('errorState');
+    return;
+  }
+
+  if (res.status === 401) {
+    document.getElementById('loginError').classList.add('active');
+    showState('loginState');
+    return;
+  }
+
+  if (!res.ok) {
+    document.getElementById('errorMessage').textContent = 'Something went wrong. Please try again.';
+    showState('errorState');
+    return;
+  }
+
+  let data;
+  try {
+    data = await res.json();
+  } catch (err) {
+    document.getElementById('errorMessage').textContent = 'Unexpected response from server.';
+    showState('errorState');
+    return;
+  }
+
+  renderEarnings(data);
+}
+
+let lastCredentials = null;
+
+document.getElementById('loginForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  document.getElementById('loginError').classList.remove('active');
+  const username = document.getElementById('username').value;
+  const password = document.getElementById('password').value;
+  lastCredentials = { username, password };
+  fetchEarnings(username, password);
+});
+
+document.getElementById('retryButton').addEventListener('click', () => {
+  if (lastCredentials) {
+    fetchEarnings(lastCredentials.username, lastCredentials.password);
+  } else {
+    showState('loginState');
+  }
+});
+</script>
+</body>
+</html>

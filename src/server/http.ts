@@ -29,6 +29,17 @@ const CORS_HEADERS: Readonly<Record<string, string>> = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
+// /host/earnings carries a Basic Auth Authorization header the host enters manually,
+// so it needs 'Authorization' in Allow-Headers, and — since it's earnings data —
+// a scoped origin rather than the wildcard used by the other public paths above.
+const HOST_EARNINGS_PATH = '/host/earnings';
+
+const HOST_CORS_HEADERS: Readonly<Record<string, string>> = {
+  'Access-Control-Allow-Origin': 'https://voltsense-csms.vercel.app',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Authorization',
+};
+
 const SUPPORTED_METHODS: ReadonlySet<string> = new Set([
   'GET',
   'POST',
@@ -103,6 +114,11 @@ export function createVoltSenseHttpServer(options: HttpServerOptions) {
       const pathname = requestUrl.pathname;
 
       // Handle CORS preflight for public browser-facing endpoints.
+      if (method === 'OPTIONS' && pathname === HOST_EARNINGS_PATH) {
+        res.writeHead(204, HOST_CORS_HEADERS);
+        res.end();
+        return;
+      }
       if (method === 'OPTIONS' && CORS_PUBLIC_PATHS.has(pathname)) {
         res.writeHead(204, CORS_HEADERS);
         res.end();
@@ -123,10 +139,13 @@ export function createVoltSenseHttpServer(options: HttpServerOptions) {
         db: options.db,
       });
 
-      // Inject CORS headers on public paths so the browser accepts the response.
-      const finalResponse = CORS_PUBLIC_PATHS.has(pathname)
-        ? { ...response, headers: { ...response.headers, ...CORS_HEADERS } }
-        : response;
+      // Inject CORS headers on public/host paths so the browser accepts the response.
+      const finalResponse =
+        pathname === HOST_EARNINGS_PATH
+          ? { ...response, headers: { ...response.headers, ...HOST_CORS_HEADERS } }
+          : CORS_PUBLIC_PATHS.has(pathname)
+            ? { ...response, headers: { ...response.headers, ...CORS_HEADERS } }
+            : response;
 
       writeHttpResponse(res, finalResponse);
     } catch (error: unknown) {

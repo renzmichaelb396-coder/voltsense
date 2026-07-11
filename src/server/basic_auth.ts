@@ -97,3 +97,19 @@ export function loadShieldCredentialsFromEnv(): ShieldCredentials {
 
   return { username, password };
 }
+
+// Distinct from VOLTSENSE_SHIELD_* — hosts (e.g. Go Hotels) get scoped read-only
+// earnings access without holding the platform admin shield credentials.
+export function loadHostShieldCredentialsFromEnv(): ShieldCredentials {
+  const username = process.env['HOST_AUTH_USER'];
+  const password = process.env['HOST_AUTH_PASSWORD'];
+
+  if (username === undefined || username.length === 0) {
+    throw new Error('[HOST_SHIELD] HOST_AUTH_USER must be set');
+  }
+  if (password === undefined || password.length === 0) {
+    throw new Error('[HOST_SHIELD] HOST_AUTH_PASSWORD must be set');
+  }
+
+  return { username, password };
+}

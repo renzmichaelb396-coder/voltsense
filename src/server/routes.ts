@@ -27,7 +27,10 @@ import { safeParseXenditWebhookPayload } from '../webhooks/xendit_types.js';
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD' | 'OPTIONS';
 
-export type RouteAuth = 'public' | 'protected' | 'webhook';
+// 'host' bypasses the global VOLTSENSE_SHIELD_* check (see requiresBasicAuth below) —
+// the route handler performs its own Basic Auth against HOST_AUTH_USER/PASSWORD instead,
+// so hosts (e.g. Go Hotels) never hold the platform admin shield credentials.
+export type RouteAuth = 'public' | 'protected' | 'webhook' | 'host';
 
 export type HttpResponse = {
   readonly statusCode: number;
