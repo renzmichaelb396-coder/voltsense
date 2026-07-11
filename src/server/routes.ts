@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http';
 
 import { Decimal } from 'decimal.js';
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import * as schema from '../db/schema.js';
@@ -468,7 +468,7 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
   const { chargePointId, connectorId, packageId, idTag } = bodyParsed.data;
 
   const chargePointRows = await ctx.db
-    .select({ siteId: schema.chargePoints.siteId })
+    .select({ siteId: schema.chargePoints.siteId, status: schema.chargePoints.status })
     .from(schema.chargePoints)
     .where(eq(schema.chargePoints.id, chargePointId))
     .limit(1);
@@ -476,6 +476,36 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
   const chargePoint = chargePointRows[0];
   if (chargePoint === undefined) {
     return jsonResponse(404, { error: 'charge_point_not_found' });
+  }
+
+  if (chargePoint.status !== 'operational') {
+    return jsonResponse(409, {
+      error: 'charger_not_available',
+      message: 'This charger is not available for charging.',
+    });
+  }
+
+  const connectorRows = await ctx.db
+    .select({ id: schema.connectors.id, status: schema.connectors.status })
+    .from(schema.connectors)
+    .where(
+      and(
+        eq(schema.connectors.chargePointId, chargePointId),
+        eq(schema.connectors.connectorId, connectorId),
+      ),
+    )
+    .limit(1);
+
+  const connector = connectorRows[0];
+  if (connector === undefined) {
+    return jsonResponse(404, { error: 'connector_not_found' });
+  }
+
+  if (connector.status !== 'Available') {
+    return jsonResponse(409, {
+      error: 'connector_not_available',
+      message: 'This connector is currently in use.',
+    });
   }
 
   const siteRows = await ctx.db
