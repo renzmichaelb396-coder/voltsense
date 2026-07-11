@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http';
 
 import { Decimal } from 'decimal.js';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, or } from 'drizzle-orm';
 import { z } from 'zod';
 
 import * as schema from '../db/schema.js';
@@ -513,6 +513,7 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
   // We intentionally do NOT write to connectors.status here — that field is owned
   // by the OCPP StatusNotification handler and writing to it from checkout would
   // permanently lock the connector if the release path ever fails.
+  const now = new Date();
   const activeSessionRows = await ctx.db
     .select({ id: schema.sessions.id })
     .from(schema.sessions)
@@ -520,7 +521,15 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
       and(
         eq(schema.sessions.chargePointId, chargePointId),
         eq(schema.sessions.connectorId, connectorId),
-        inArray(schema.sessions.status, ['awaiting_payment', 'payment_cleared', 'charging']),
+        or(
+          // payment_cleared and charging are always blocking
+          inArray(schema.sessions.status, ['payment_cleared', 'charging']),
+          // awaiting_payment only blocks if the auth window hasn't expired
+          and(
+            eq(schema.sessions.status, 'awaiting_payment'),
+            gt(schema.sessions.authExpiresAt, now),
+          ),
+        ),
       ),
     )
     .limit(1);
