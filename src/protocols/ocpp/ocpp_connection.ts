@@ -559,7 +559,7 @@ export class OcppConnection {
       }
       // Sequential, not parallel — keeps retry order stable and avoids bursting
       // RemoteStartTransaction calls at a charge point the instant it reconnects.
-      await this.retryRemoteStart(session);
+      await this.retryRemoteStart(db, session);
     }
   }
 
@@ -580,7 +580,7 @@ export class OcppConnection {
     );
   }
 
-  private async retryRemoteStart(session: SessionRow): Promise<void> {
+  private async retryRemoteStart(db: SettlementDb, session: SessionRow): Promise<void> {
     const payload: RemoteStartTransactionReq = {
       connectorId: session.connectorId,
       idTag: session.idTag,
@@ -588,9 +588,20 @@ export class OcppConnection {
 
     try {
       const result = await this.sendCall('RemoteStartTransaction', payload);
+      const status = extractRemoteStartStatus(result);
       console.log(
-        `[voltsense:ocpp] BootNotification retry sessionId=${session.id} chargePointId=${this.chargePointId} outcome=${extractRemoteStartStatus(result)}`,
+        `[voltsense:ocpp] BootNotification retry sessionId=${session.id} chargePointId=${this.chargePointId} outcome=${status}`,
       );
+      // Only advance the session once the charger has actually accepted the
+      // retry — resolveSessionForStart() only matches 'payment_cleared' /
+      // 'authorized' sessions, so a rejected retry must leave the session as
+      // 'paid_charger_offline' for the next reconnect sweep to pick up.
+      if (status === 'Accepted') {
+        await db
+          .update(schema.sessions)
+          .set({ status: 'payment_cleared', updatedAt: new Date() })
+          .where(eq(schema.sessions.id, session.id));
+      }
     } catch (err) {
       // The charge point just booted — a retry failure must never tear down
       // the connection or propagate past this method.

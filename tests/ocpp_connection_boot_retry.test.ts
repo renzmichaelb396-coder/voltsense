@@ -52,19 +52,34 @@ function buildSessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
   };
 }
 
-function makeFakeDb(rows: SessionRow[]): { db: SettlementDb; limitCalls: number[] } {
+type UpdateCall = { set: Record<string, unknown> };
+
+function makeFakeDb(rows: SessionRow[]): { db: SettlementDb; limitCalls: number[]; updateCalls: UpdateCall[] } {
   const limitCalls: number[] = [];
-  const chain = {
-    from: () => chain,
-    where: () => chain,
-    orderBy: () => chain,
+  // Retries run sequentially (awaited one at a time in resumePendingSessions),
+  // so update calls land in the same order sessions were retried — no need to
+  // decode drizzle's internal eq() SQL shape to know which session a call was for.
+  const updateCalls: UpdateCall[] = [];
+  const selectChain = {
+    from: () => selectChain,
+    where: () => selectChain,
+    orderBy: () => selectChain,
     limit: async (n: number) => {
       limitCalls.push(n);
       return rows.slice(0, n);
     },
   };
-  const fakeDb = { select: () => chain };
-  return { db: fakeDb as unknown as SettlementDb, limitCalls };
+  const fakeDb = {
+    select: () => selectChain,
+    update: () => ({
+      set: (set: Record<string, unknown>) => ({
+        where: async () => {
+          updateCalls.push({ set });
+        },
+      }),
+    }),
+  };
+  return { db: fakeDb as unknown as SettlementDb, limitCalls, updateCalls };
 }
 
 type ParsedCall = { messageId: string; action: string; payload: unknown };
@@ -135,7 +150,7 @@ describe('OcppConnection BootNotification retry', () => {
       buildSessionRow({ id: 'session-1', idTag: 'VS-guest-1', connectorId: 1, status: 'payment_cleared' }),
       buildSessionRow({ id: 'session-2', idTag: 'VS-guest-2', connectorId: 2, status: 'paid_charger_offline' }),
     ];
-    const { db } = makeFakeDb(pending);
+    const { db, updateCalls } = makeFakeDb(pending);
     setUpConnection(db);
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -161,6 +176,15 @@ describe('OcppConnection BootNotification retry', () => {
         expect.stringContaining('sessionId=session-2 chargePointId=cp-1 outcome=Accepted'),
       );
     });
+
+    // The actual bug: without the fix, an Accepted RemoteStartTransaction never
+    // advanced the session's status, so resolveSessionForStart's later
+    // StartTransaction lookup (which only matches 'payment_cleared' / 'authorized')
+    // found nothing and the session — including the 'paid_charger_offline' one —
+    // stayed stuck forever.
+    await vi.waitFor(() => expect(updateCalls).toHaveLength(2));
+    expect(updateCalls[0]?.set).toMatchObject({ status: 'payment_cleared' });
+    expect(updateCalls[1]?.set).toMatchObject({ status: 'payment_cleared' });
   });
 
   it('logs and continues past a failed retry, without throwing or crashing the connection', async () => {
@@ -168,7 +192,7 @@ describe('OcppConnection BootNotification retry', () => {
       buildSessionRow({ id: 'session-fail', idTag: 'VS-guest-fail', connectorId: 1 }),
       buildSessionRow({ id: 'session-ok', idTag: 'VS-guest-ok', connectorId: 2 }),
     ];
-    const { db } = makeFakeDb(pending);
+    const { db, updateCalls } = makeFakeDb(pending);
     setUpConnection(db);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -191,6 +215,11 @@ describe('OcppConnection BootNotification retry', () => {
     });
 
     expect(connection.getState()).toBe('OPERATIONAL');
+
+    // A rejected/errored retry must NOT advance the session — only the
+    // Accepted one (session-ok) gets its status flipped to payment_cleared.
+    await vi.waitFor(() => expect(updateCalls).toHaveLength(1));
+    expect(updateCalls[0]?.set).toMatchObject({ status: 'payment_cleared' });
   });
 
   it('caps the retry sweep at 5 sessions', async () => {
