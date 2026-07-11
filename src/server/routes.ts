@@ -11,7 +11,7 @@ import { and, desc, eq, gt, inArray, or } from 'drizzle-orm';
 import { z } from 'zod';
 
 import * as schema from '../db/schema.js';
-import { createPaymentLink, loadPayMongoConfigFromEnv } from '../services/paymongo.js';
+import { createCheckoutSession, loadPayMongoConfigFromEnv } from '../services/paymongo.js';
 import type { SettlementDb } from '../services/settlement.js';
 import { ADMIN_ROUTES } from './admin_routes.js';
 import { getChargePointStatuses, getActiveSessionSummaries, sendRemoteStartTransaction } from './ocpp_ws.js';
@@ -354,7 +354,7 @@ async function handleCreatePayment(ctx: RequestContext): Promise<HttpResponse> {
     return jsonResponse(500, { error: 'paymongo_not_configured' });
   }
 
-  const { amount_php, description, session_id, reference_number, remarks } = bodyParsed.data;
+  const { amount_php, description, session_id, reference_number } = bodyParsed.data;
 
   const sessionRows = await ctx.db
     .select({ id: schema.sessions.id })
@@ -366,13 +366,13 @@ async function handleCreatePayment(ctx: RequestContext): Promise<HttpResponse> {
     return jsonResponse(404, { error: 'session_not_found' });
   }
 
-  const result = await createPaymentLink(
+  const result = await createCheckoutSession(
     {
       amountPhp: amount_php,
       description,
       referenceNumber: reference_number,
-      ...(remarks !== undefined ? { remarks } : {}),
-      metadata: { session_id },
+      successUrl: `https://voltsense-csms.vercel.app/charging-started.html?session=${session_id}`,
+      cancelUrl: 'https://voltsense-csms.vercel.app/payment-cancelled.html',
     },
     paymongoConfig,
   );
@@ -390,11 +390,11 @@ async function handleCreatePayment(ctx: RequestContext): Promise<HttpResponse> {
     .values({
       sessionId: session_id,
       psp: 'paymongo',
-      externalId: result.linkId,
+      externalId: result.sessionId,
       idempotencyKey: reference_number,
       amountPhp: amount_php,
       status: 'pending',
-      rawPayload: { link_id: result.linkId, _url: result.checkoutUrl },
+      rawPayload: { checkout_session_id: result.sessionId, _url: result.checkoutUrl },
     })
     .returning({ id: schema.payments.id });
 
@@ -406,9 +406,8 @@ async function handleCreatePayment(ctx: RequestContext): Promise<HttpResponse> {
   return jsonResponse(201, {
     payment_id: payment.id,
     checkout_url: result.checkoutUrl,
-    link_id: result.linkId,
+    session_id: result.sessionId,
     reference_number,
-    amount_centavos: result.amountCentavos,
   });
 }
 
@@ -600,11 +599,13 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
         throw new Error('[voltsense:checkout] sessions insert returned no row');
       }
 
-      const linkResult = await createPaymentLink(
+      const linkResult = await createCheckoutSession(
         {
           amountPhp: computedAmountPhp,
           referenceNumber: session.id,
           description: `VoltSense charging session — ${site.name}`,
+          successUrl: `https://voltsense-csms.vercel.app/charging-started.html?session=${session.id}`,
+          cancelUrl: `https://voltsense-csms.vercel.app/payment-cancelled.html?cpid=${chargePointId}&cid=${connectorId}`,
         },
         paymongoConfig,
       );

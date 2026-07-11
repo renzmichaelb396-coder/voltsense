@@ -48,40 +48,36 @@ export function phpStringToCentavos(amountPhp: string): number {
   return Number(wholePart) * 100 + centavosFromFrac + centavosFromSub;
 }
 
-// ─── Payment link creation ────────────────────────────────────────────────────
+// ─── Checkout session creation ─────────────────────────────────────────────────
 
-export type CreatePaymentLinkRequest = {
+export type CreateCheckoutSessionRequest = {
   amountPhp: string;
   description: string;
-  remarks?: string;
   referenceNumber?: string;
-  metadata?: Readonly<Record<string, string>>;
+  successUrl: string;
+  cancelUrl: string;
 };
 
-export type CreatePaymentLinkSuccess = {
+export type CreateCheckoutSessionSuccess = {
   outcome: 'success';
-  linkId: string;
+  sessionId: string;
   checkoutUrl: string;
-  referenceNumber: string | null;
-  amountCentavos: number;
 };
 
-export type CreatePaymentLinkFailure = {
+export type CreateCheckoutSessionFailure = {
   outcome: 'failure';
   errorCode: string;
   errorMessage: string;
 };
 
-export type CreatePaymentLinkResult = CreatePaymentLinkSuccess | CreatePaymentLinkFailure;
+export type CreateCheckoutSessionResult = CreateCheckoutSessionSuccess | CreateCheckoutSessionFailure;
 
-const PayMongoLinkOkSchema = z.object({
+const PayMongoCheckoutSessionOkSchema = z.object({
   data: z.object({
     id: z.string().min(1),
-    type: z.literal('link'),
+    type: z.literal('checkout_session'),
     attributes: z.object({
-      amount: z.number().int().positive(),
       checkout_url: z.string().url(),
-      reference_number: z.string().nullable().optional(),
     }),
   }),
 });
@@ -111,26 +107,30 @@ async function fetchWithTimeout(
   }
 }
 
-export async function createPaymentLink(
-  req: CreatePaymentLinkRequest,
+export async function createCheckoutSession(
+  req: CreateCheckoutSessionRequest,
   config: PayMongoConfig,
-): Promise<CreatePaymentLinkResult> {
+): Promise<CreateCheckoutSessionResult> {
   const amountCentavos = phpStringToCentavos(req.amountPhp);
 
-  const attributes: Record<string, string | number | Record<string, string>> = {
-    amount: amountCentavos,
+  const attributes: Record<string, unknown> = {
+    billing: { name: 'VoltSense Customer' },
+    line_items: [
+      {
+        currency: 'PHP',
+        amount: amountCentavos,
+        name: req.description,
+        quantity: 1,
+      },
+    ],
+    payment_method_types: ['card', 'gcash', 'paymaya', 'grab_pay'],
+    success_url: req.successUrl,
+    cancel_url: req.cancelUrl,
     description: req.description,
-    currency: 'PHP',
   };
 
-  if (req.remarks !== undefined) {
-    attributes['remarks'] = req.remarks;
-  }
   if (req.referenceNumber !== undefined) {
     attributes['reference_number'] = req.referenceNumber;
-  }
-  if (req.metadata !== undefined) {
-    attributes['metadata'] = { ...req.metadata };
   }
 
   const body = JSON.stringify({ data: { attributes } });
@@ -138,7 +138,7 @@ export async function createPaymentLink(
   let resp: Response;
   try {
     resp = await fetchWithTimeout(
-      `${config.baseUrl}/links`,
+      `${config.baseUrl}/checkout_sessions`,
       {
         method: 'POST',
         headers: {
@@ -161,20 +161,18 @@ export async function createPaymentLink(
   const raw: unknown = await resp.json();
 
   if (resp.ok) {
-    const parsed = PayMongoLinkOkSchema.safeParse(raw);
+    const parsed = PayMongoCheckoutSessionOkSchema.safeParse(raw);
     if (!parsed.success) {
       return {
         outcome: 'failure',
         errorCode: 'INVALID_RESPONSE_SCHEMA',
-        errorMessage: `PayMongo link body did not match expected schema: ${parsed.error.message}`,
+        errorMessage: `PayMongo checkout session body did not match expected schema: ${parsed.error.message}`,
       };
     }
     return {
       outcome: 'success',
-      linkId: parsed.data.data.id,
+      sessionId: parsed.data.data.id,
       checkoutUrl: parsed.data.data.attributes.checkout_url,
-      referenceNumber: parsed.data.data.attributes.reference_number ?? null,
-      amountCentavos: parsed.data.data.attributes.amount,
     };
   }
 
