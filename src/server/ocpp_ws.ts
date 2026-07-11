@@ -194,7 +194,7 @@ async function lookupChargePointRegistryStatus(
   if (row.status === 'decommissioned') {
     return 'decommissioned';
   }
-  if (row.status === 'provisioned') {
+  if (row.status === 'provisioned' || row.status === 'operational') {
     return 'provisioned';
   }
   return 'rejected';
