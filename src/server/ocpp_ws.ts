@@ -44,6 +44,7 @@ import {
   OcppConnection,
   type ChargePointRegistryLookup,
   type ChargePointRegistryStatus,
+  type OcppSessionState,
 } from '../protocols/ocpp/ocpp_connection.js';
 import {
   OCPP_SECURITY_PROFILE_ID,
@@ -206,8 +207,37 @@ async function lookupChargePointRegistryStatus(
 const liveConnections: Map<string, OcppConnection> = new Map();
 
 // Exposed for GET /ocpp/status — bench test visibility only.
-export function getConnectedChargePoints(): string[] {
-  return Array.from(liveConnections.keys());
+// ocppState distinguishes a live WebSocket from an accepted BootNotification:
+// a charger can hold a WS_OPEN connection without ever reaching OPERATIONAL.
+export type ChargePointStatus = {
+  readonly id: string;
+  readonly ocppState: OcppSessionState;
+};
+
+export function getChargePointStatuses(): ChargePointStatus[] {
+  return Array.from(liveConnections.entries()).map(([id, connection]) => ({
+    id,
+    ocppState: connection.getState(),
+  }));
+}
+
+// Exposed for GET /ocpp/status — bench test visibility into in-progress
+// sessions (kWh delivered so far) without tailing Render logs.
+export type ActiveSessionSummary = {
+  readonly chargePointId: string;
+  readonly transactionId: number;
+  readonly sessionId: string;
+  readonly lastMeterWh: number;
+};
+
+export function getActiveSessionSummaries(): ActiveSessionSummary[] {
+  const summaries: ActiveSessionSummary[] = [];
+  for (const [chargePointId, connection] of liveConnections) {
+    for (const tx of connection.getActiveSessionSummary()) {
+      summaries.push({ chargePointId, ...tx });
+    }
+  }
+  return summaries;
 }
 
 // Set once by startOcppWsListener — sendRemoteStartTransaction needs DB access

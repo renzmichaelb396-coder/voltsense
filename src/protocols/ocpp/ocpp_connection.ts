@@ -23,6 +23,7 @@ import {
   type BootNotificationPayload,
   type BootNotificationConf,
   type RemoteStartTransactionReq,
+  type ChangeConfigurationReq,
   isOcppAction,
   isOcppErrorCode,
   isParseError,
@@ -144,6 +145,20 @@ function isOcppCallError(value: unknown): value is OcppCallError {
 }
 
 function extractRemoteStartStatus(result: unknown): string {
+  if (typeof result === 'object' && result !== null && 'status' in result) {
+    const status = (result as Record<string, unknown>)['status'];
+    if (typeof status === 'string') {
+      return status;
+    }
+  }
+  return 'unknown';
+}
+
+// ChangeConfiguration.conf carries the same { status: string } shape as
+// RemoteStartTransaction.conf, but sendCall()'s return type is Promise<unknown>
+// (§1.1.4 — no OCPP CallResult payload is typed), so this re-narrows independently
+// rather than assuming the two actions share a response type.
+function extractChangeConfigurationStatus(result: unknown): string {
   if (typeof result === 'object' && result !== null && 'status' in result) {
     const status = (result as Record<string, unknown>)['status'];
     if (typeof status === 'string') {
@@ -318,6 +333,15 @@ export class OcppConnection {
     return this.state;
   }
 
+  // Exposed for GET /ocpp/status — bench test visibility only (Fix C, §Step 9).
+  getActiveSessionSummary(): Array<{ transactionId: number; sessionId: string; lastMeterWh: number }> {
+    return Array.from(this.activeTransactions.entries()).map(([transactionId, tx]) => ({
+      transactionId,
+      sessionId: tx.sessionId,
+      lastMeterWh: tx.lastMeterWh,
+    }));
+  }
+
   onOpen(): void {
     this.state = 'WS_OPEN';
     this.startPendingCallSweep();
@@ -464,6 +488,19 @@ export class OcppConnection {
     this.state = 'BOOT_ACCEPTED';
     this.state = 'OPERATIONAL';
 
+    console.log(
+      `[voltsense:ocpp] BootNotification accepted — chargePointId=${this.chargePointId} state=OPERATIONAL`,
+    );
+
+    // Fire-and-forget: sets the sample interval kWh cutoff enforcement depends on
+    // (checkKwhCutoff only runs off inbound MeterValues frames). Must never delay
+    // or alter the BootNotification.conf below.
+    void this.sendChangeConfiguration('MeterValueSampleInterval', '60').catch((err: unknown) => {
+      console.error(
+        `[voltsense:ocpp] failed to set MeterValueSampleInterval: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+
     // Fire-and-forget: resumes any sessions that paid while this charge point
     // was offline. Must never delay or alter the BootNotification.conf below.
     this.retryPendingSessionsForReconnect();
@@ -524,6 +561,23 @@ export class OcppConnection {
       // RemoteStartTransaction calls at a charge point the instant it reconnects.
       await this.retryRemoteStart(session);
     }
+  }
+
+  // ─── ChangeConfiguration (fire-and-forget from BootNotification) ──────────
+
+  private async sendChangeConfiguration(key: string, value: string): Promise<void> {
+    const payload: ChangeConfigurationReq = { key, value };
+    const result = await this.sendCall('ChangeConfiguration', payload);
+    const status = extractChangeConfigurationStatus(result);
+    if (status === 'Accepted' || status === 'RebootRequired') {
+      console.log(
+        `[voltsense:ocpp] ChangeConfiguration ${key}=${value} accepted (status=${status}) chargePointId=${this.chargePointId}`,
+      );
+      return;
+    }
+    console.warn(
+      `[voltsense:ocpp] ChangeConfiguration ${key}=${value} rejected by chargePointId=${this.chargePointId} (status=${status})`,
+    );
   }
 
   private async retryRemoteStart(session: SessionRow): Promise<void> {

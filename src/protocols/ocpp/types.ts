@@ -207,6 +207,11 @@ export type RemoteStartTransactionReq = {
   idTag: string;
 };
 
+export type ChangeConfigurationReq = {
+  key: string;
+  value: string;
+};
+
 export type CallResultPayload =
   | BootNotificationConf
   | HeartbeatConf

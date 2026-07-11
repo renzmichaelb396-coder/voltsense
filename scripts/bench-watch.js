@@ -32,7 +32,7 @@ async function preflight() {
     if (typeof d.connected !== 'boolean') throw new Error('bad response');
     console.log('      ✅ OCPP endpoint ready.');
     if (d.connected) {
-      console.log('      ⚠️  Already connected: ' + d.chargePoints.join(', '));
+      console.log('      ⚠️  Already connected: ' + d.chargePoints.map(cp => `${cp.id} (${cp.ocppState})`).join(', '));
     }
   } catch (e) {
     console.log('      ❌ OCPP endpoint failed: ' + e.message);
@@ -73,17 +73,15 @@ async function poll() {
     if (!r.ok) { process.stdout.write('x'); }
     else {
       const d = await r.json();
-      if (d.connected) {
+      const operational = d.chargePoints?.some(cp => cp.ocppState === 'OPERATIONAL');
+      if (d.activeSessions?.length) {
+        console.log('  Active sessions:', JSON.stringify(d.activeSessions));
+      }
+      if (operational) {
         console.log('\n\n' + line('═'));
-        console.log('  ✅  CHARGER CONNECTED!');
-        console.log('  ID: ' + d.chargePoints.join(', '));
-        console.log('  BootNotification received by server.');
-        console.log('\n⚡ CRITICAL STEP — Set MeterValueSampleInterval');
-        console.log('   In OCPPSetTool → Change Configuration');
-        console.log('   Key:   MeterValueSampleInterval');
-        console.log('   Value: 60');
-        console.log('   Confirm charger responds: Accepted');
-        console.log('   WARNING: Without this, kWh package cutoff will NEVER fire.\n');
+        console.log('  ✅ BootNotification ACCEPTED — chargePoint is OPERATIONAL');
+        console.log('  Confirmed: server accepted boot, not just WebSocket open.');
+        console.log('  ID: ' + d.chargePoints.map(cp => cp.id).join(', '));
         console.log('  BENCH TEST PASSED — ready for Go Hotels.');
         console.log(line('═'));
         process.exit(0);

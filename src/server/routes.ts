@@ -14,7 +14,7 @@ import * as schema from '../db/schema.js';
 import { createPaymentLink, loadPayMongoConfigFromEnv } from '../services/paymongo.js';
 import type { SettlementDb } from '../services/settlement.js';
 import { ADMIN_ROUTES } from './admin_routes.js';
-import { getConnectedChargePoints, sendRemoteStartTransaction } from './ocpp_ws.js';
+import { getChargePointStatuses, getActiveSessionSummaries, sendRemoteStartTransaction } from './ocpp_ws.js';
 import { verifyPayMongoWebhookSignature } from '../webhooks/crypto.js';
 import {
   isPayMongoFailedEvent,
@@ -597,11 +597,16 @@ function handleHealth(_ctx: RequestContext): HttpResponse {
 }
 
 function handleOcppStatus(_ctx: RequestContext): HttpResponse {
-  const connected = getConnectedChargePoints();
+  const chargePoints = getChargePointStatuses();
+  const activeSessions = getActiveSessionSummaries();
   return {
     statusCode: 200,
     headers: JSON_HEADERS,
-    body: JSON.stringify({ connected: connected.length > 0, chargePoints: connected }),
+    body: JSON.stringify({
+      connected: chargePoints.length > 0,
+      chargePoints,
+      activeSessions,
+    }),
   };
 }
 
