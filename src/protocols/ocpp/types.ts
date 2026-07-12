@@ -183,8 +183,8 @@ export type OcppSessionState =
 export type BootNotificationPayload = {
   chargePointVendor: string;
   chargePointModel: string;
-  chargePointSerialNumber: string;
-  firmwareVersion: string;
+  chargePointSerialNumber?: string;
+  firmwareVersion?: string;
 };
 
 // ─── Outbound payloads ────────────────────────────────────────────────────────

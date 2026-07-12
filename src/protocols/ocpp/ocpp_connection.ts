@@ -43,7 +43,8 @@ export type ChargePointRegistryStatus = 'provisioned' | 'not_found' | 'decommiss
 export type ChargePointRegistryLookup = (chargePointId: string) => ChargePointRegistryStatus;
 
 // ─── BootNotification payload guard ──────────────────────────────────────────
-// §1.1.3: vendor, model, serialNumber must be non-empty strings.
+// §1.1.3: only vendor and model are mandatory; serialNumber and firmwareVersion
+// are optional per spec and must not cause a Rejected status if omitted.
 
 function isBootNotificationPayload(value: unknown): value is BootNotificationPayload {
   if (typeof value !== 'object' || value === null) return false;
@@ -51,8 +52,8 @@ function isBootNotificationPayload(value: unknown): value is BootNotificationPay
   return (
     typeof v['chargePointVendor'] === 'string' && v['chargePointVendor'].length > 0 &&
     typeof v['chargePointModel'] === 'string' && v['chargePointModel'].length > 0 &&
-    typeof v['chargePointSerialNumber'] === 'string' && v['chargePointSerialNumber'].length > 0 &&
-    typeof v['firmwareVersion'] === 'string'
+    (v['chargePointSerialNumber'] === undefined || typeof v['chargePointSerialNumber'] === 'string') &&
+    (v['firmwareVersion'] === undefined || typeof v['firmwareVersion'] === 'string')
   );
 }
 
@@ -473,9 +474,16 @@ export class OcppConnection {
       return buildCallResultFrame(msg.messageId, conf);
     };
 
-    // §1.1.3 step 3: validate mandatory payload fields — all must be non-empty strings.
+    // §1.1.3 step 3: validate mandatory payload fields — vendor/model must be non-empty strings.
     if (!isBootNotificationPayload(msg.payload)) {
-      return reject('BootNotification payload missing required fields (vendor/model/serial/firmware)');
+      return reject('BootNotification payload missing required fields (vendor/model)');
+    }
+
+    if (!msg.payload.chargePointSerialNumber || !msg.payload.firmwareVersion) {
+      console.warn(
+        `[voltsense:ocpp] BootNotification missing optional fields — chargePointId=${this.chargePointId} ` +
+          `serialNumber=${msg.payload.chargePointSerialNumber ?? '(none)'} firmwareVersion=${msg.payload.firmwareVersion ?? '(none)'}`,
+      );
     }
 
     // §1.1.3 step 2: charge point must exist in registry with status = 'provisioned'.
