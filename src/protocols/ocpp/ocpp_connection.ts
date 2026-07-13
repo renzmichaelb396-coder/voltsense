@@ -6,7 +6,7 @@ import { and, asc, desc, eq, gt, inArray, isNull } from 'drizzle-orm';
 
 import * as schema from '../../db/schema.js';
 import { executeRevenueSplitOrRefund, type SettlementDb } from '../../services/settlement.js';
-import { loadRefundConfigFromEnv } from '../../services/refund.js';
+import { dispatchRefund, loadRefundConfigFromEnv } from '../../services/refund.js';
 import {
   type OcppInbound,
   type OcppCall,
@@ -287,6 +287,13 @@ export function buildCallErrorFrame(
 export function buildCallResultFrame(messageId: string, payload: CallResultPayload): string {
   return JSON.stringify([MESSAGE_TYPE_CALL_RESULT, messageId, payload]);
 }
+
+// ─── Zero-kWh refund gate (§1.3.7) ─────────────────────────────────────────────
+// StopTransaction sessions that delivered ≤ this many kWh are treated as a
+// failed charge (meter noise tolerance, not a real delivery) and refunded in
+// full instead of going through the host/platform revenue split.
+
+const ZERO_KWH_THRESHOLD = new Decimal('0.05'); // 50 Wh tolerance for meter noise
 
 // ─── Transaction ID counter ───────────────────────────────────────────────────
 // Module-level sequence: monotonically increasing per CSMS process lifetime.
@@ -783,6 +790,40 @@ export class OcppConnection {
       const payment = paymentRows[0];
       if (payment === undefined) {
         console.error(`[voltsense:ocpp] no paid payment found for session=${session.id} — cannot settle`);
+        return;
+      }
+
+      // §1.3.7: nothing was delivered — skip the revenue split and refund the
+      // customer in full instead of crediting host/platform balances for 0 kWh.
+      if (new Decimal(kwhDelivered).lte(ZERO_KWH_THRESHOLD)) {
+        let refundConfig;
+        try {
+          refundConfig = loadRefundConfigFromEnv();
+        } catch (err) {
+          console.error(`[voltsense:ocpp] refund config error (zero-kWh): ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
+
+        const refundResult = await dispatchRefund(
+          {
+            paymentId: payment.id,
+            psp: payment.psp,
+            externalId: payment.externalId,
+            amountPhp: payment.amountPhp,
+            reason: 'zero_kwh',
+          },
+          refundConfig,
+        );
+
+        if (refundResult.outcome === 'success') {
+          await db
+            .update(schema.payments)
+            .set({ status: 'refunded', updatedAt: new Date() })
+            .where(eq(schema.payments.id, payment.id));
+          console.log(`[voltsense:ocpp] zero-kWh refund issued for session=${session.id}`);
+        } else {
+          console.error(`[voltsense:ocpp] zero-kWh refund FAILED for session=${session.id} — manual review needed`);
+        }
         return;
       }
 

@@ -409,8 +409,14 @@ export async function executeRevenueSplitOrRefund(
       opts.refundConfig,
     );
 
-    return refund.outcome === 'success'
-      ? { status: 'refunded', refund }
-      : { status: 'refund_failed', refund, originalError: settlementError.message };
+    if (refund.outcome === 'success') {
+      await opts.db
+        .update(schema.payments)
+        .set({ status: 'refunded', updatedAt: new Date() })
+        .where(eq(schema.payments.id, opts.paymentId));
+      return { status: 'refunded', refund };
+    }
+
+    return { status: 'refund_failed', refund, originalError: settlementError.message };
   }
 }

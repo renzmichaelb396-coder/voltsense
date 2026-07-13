@@ -6,7 +6,12 @@
 import { randomUUID } from 'node:crypto';
 import { createHmac } from 'node:crypto';
 import { config as loadDotenv } from 'dotenv';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { and, eq, inArray } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+
+import * as schema from '../src/db/schema.js';
 
 loadDotenv();
 
@@ -14,6 +19,53 @@ const TARGET = 'https://voltsense-pmfq.onrender.com';
 
 const CP = '33333333-3333-3333-3333-333333333333';
 const FAKE = '00000000-0000-0000-0000-000000000000';
+
+/** Blocking session statuses that leave the GoMandaloyo test connector unusable. */
+const BLOCKING_SESSION_STATUSES = [
+  'awaiting_payment',
+  'payment_cleared',
+  'charging',
+  'paid_charger_offline',
+  'authorized',
+] as const;
+
+/**
+ * Test isolation for T03 / T15 / T24: reset connector to Available and expire
+ * any blocking sessions on CP+connector 1 so prior chaos runs cannot leak 409s.
+ * Touches the live Supabase DB only — no production code path.
+ */
+async function resetTestConnector(): Promise<void> {
+  const databaseUrl = process.env['DATABASE_URL'];
+  if (databaseUrl === undefined || databaseUrl.length === 0) {
+    throw new Error('DATABASE_URL must be set in .env for chaos test isolation');
+  }
+
+  const client = postgres(databaseUrl, { max: 1 });
+  const db = drizzle(client, { schema });
+  try {
+    await db
+      .update(schema.connectors)
+      .set({ status: 'Available', updatedAt: new Date() })
+      .where(and(eq(schema.connectors.chargePointId, CP), eq(schema.connectors.connectorId, 1)));
+
+    await db
+      .update(schema.sessions)
+      .set({
+        status: 'expired',
+        authExpiresAt: new Date(Date.now() - 60_000),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.sessions.chargePointId, CP),
+          eq(schema.sessions.connectorId, 1),
+          inArray(schema.sessions.status, [...BLOCKING_SESSION_STATUSES]),
+        ),
+      );
+  } finally {
+    await client.end({ timeout: 5 });
+  }
+}
 
 function validCheckoutBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -128,6 +180,10 @@ describe('chaos: preflight', () => {
 });
 
 describe('chaos: checkout happy path', () => {
+  beforeEach(async () => {
+    await resetTestConnector();
+  });
+
   it('T03 POST /checkout VALID -> 201 {sessionId(uuid), checkoutUrl(https)}', async () => {
     const res = await postJson('/checkout', validCheckoutBody());
     const body = res.json as any;
@@ -216,6 +272,10 @@ describe('chaos: webhook security', () => {
   if (!secret) {
     throw new Error('PAYMONGO_WEBHOOK_SECRET must be set in .env for webhook chaos tests');
   }
+
+  beforeEach(async () => {
+    await resetTestConnector();
+  });
 
   it('T12 no signature header -> 401 missing_paymongo_signature', async () => {
     const res = await postJson('/webhooks/paymongo', buildPaymongoPaidPayload(randomUUID(), `pay_${randomUUID()}`));
@@ -369,6 +429,10 @@ describe('chaos: injection', () => {
 });
 
 describe('chaos: double-booking race', () => {
+  beforeEach(async () => {
+    await resetTestConnector();
+  });
+
   it('T24 concurrent /checkout on same charger+connector -> exactly one 201', async () => {
     const idTag = `chaos-race-${randomUUID()}`;
     const [a, b] = await Promise.all([
