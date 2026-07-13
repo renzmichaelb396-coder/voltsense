@@ -339,6 +339,12 @@ export const ADMIN_ROUTES: readonly RouteDefinition[] = [
     handler: handleAdminSessions,
   },
   {
+    method: 'POST',
+    pathname: '/admin/expire-session',
+    auth: 'protected',
+    handler: handleAdminExpireSession,
+  },
+  {
     method: 'GET',
     pathname: '/host/earnings',
     auth: 'host',
