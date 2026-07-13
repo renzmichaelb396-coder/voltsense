@@ -134,6 +134,7 @@ export function createVoltSenseHttpServer(options: HttpServerOptions) {
       const response = await dispatchRoute({
         method,
         pathname,
+        searchParams: requestUrl.searchParams,
         headers: req.headers,
         rawBody,
         db: options.db,

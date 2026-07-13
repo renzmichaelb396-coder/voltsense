@@ -3,6 +3,7 @@
 
 import { desc, eq, and, sum, count } from 'drizzle-orm';
 import { Decimal } from 'decimal.js';
+import { z } from 'zod';
 
 import * as schema from '../db/schema.js';
 import { PLATFORM_ACCOUNT_ID } from '../services/settlement.js';
@@ -19,6 +20,13 @@ function jsonResponse(statusCode: number, payload: unknown): HttpResponse {
     headers: JSON_HEADERS,
     body: JSON.stringify(payload),
   };
+}
+
+function parseJsonBody(rawBody: string): unknown {
+  if (rawBody.length === 0) {
+    return undefined;
+  }
+  return JSON.parse(rawBody) as unknown;
 }
 
 // ─── handleAdminEarnings ──────────────────────────────────────────────────────
@@ -100,60 +108,139 @@ export async function handleAdminEarnings(ctx: RequestContext): Promise<HttpResp
 
 // ─── handleAdminSessions ──────────────────────────────────────────────────────
 // GET /admin/sessions — last 50 completed sessions, newest first.
+// Optional ?status= query param opts out of the completed-only default:
+//   ?status=all           — any status, newest-created first (bench-test tooling)
+//   ?status=<enum value>  — a single specific status (e.g. payment_cleared, charging)
+// Omitting the param preserves the original completed-only behavior byte-for-byte.
 
 const RECENT_SESSIONS_LIMIT = 50;
 
+const SESSION_STATUS_VALUES = schema.sessionStatusEnum.enumValues;
+type SessionStatus = (typeof SESSION_STATUS_VALUES)[number];
+
+function isSessionStatus(value: string): value is SessionStatus {
+  return (SESSION_STATUS_VALUES as readonly string[]).includes(value);
+}
+
 type AdminSessionRow = {
   sessionId: string;
+  chargePointId: string;
+  connectorId: number;
   siteId: string;
   siteName: string;
   packageId: string;
+  status: string;
+  idTag: string;
   kwhDelivered: string | null;
   energyChargePhp: string | null;
   hostSharePhp: string | null;
   platformSharePhp: string | null;
   pspFeePhp: string | null;
+  createdAt: string;
   startedAt: string | null;
   stoppedAt: string | null;
 };
 
 export async function handleAdminSessions(ctx: RequestContext): Promise<HttpResponse> {
+  const statusParam = ctx.searchParams.get('status');
+
+  let whereClause;
+  if (statusParam === null) {
+    whereClause = eq(schema.sessions.status, 'completed');
+  } else if (statusParam === 'all') {
+    whereClause = undefined;
+  } else if (isSessionStatus(statusParam)) {
+    whereClause = eq(schema.sessions.status, statusParam);
+  } else {
+    return jsonResponse(400, { error: 'invalid_status_filter' });
+  }
+
   const rows = await ctx.db
     .select({
       sessionId: schema.sessions.id,
+      chargePointId: schema.sessions.chargePointId,
+      connectorId: schema.sessions.connectorId,
       siteId: schema.sites.id,
       siteName: schema.sites.name,
       packageId: schema.sessions.packageId,
+      status: schema.sessions.status,
+      idTag: schema.sessions.idTag,
       kwhDelivered: schema.sessions.kwhDelivered,
       energyChargePhp: schema.sessions.energyChargePhp,
       hostSharePhp: schema.sessions.hostSharePhp,
       platformSharePhp: schema.sessions.platformSharePhp,
       pspFeePhp: schema.sessions.pspFeePhp,
+      createdAt: schema.sessions.createdAt,
       startedAt: schema.sessions.startedAt,
       stoppedAt: schema.sessions.stoppedAt,
     })
     .from(schema.sessions)
     .innerJoin(schema.chargePoints, eq(schema.chargePoints.id, schema.sessions.chargePointId))
     .innerJoin(schema.sites, eq(schema.sites.id, schema.chargePoints.siteId))
-    .where(eq(schema.sessions.status, 'completed'))
-    .orderBy(desc(schema.sessions.stoppedAt))
+    .where(whereClause)
+    .orderBy(desc(schema.sessions.createdAt))
     .limit(RECENT_SESSIONS_LIMIT);
 
   const sessions: AdminSessionRow[] = rows.map((row) => ({
     sessionId: row.sessionId,
+    chargePointId: row.chargePointId,
+    connectorId: row.connectorId,
     siteId: row.siteId,
     siteName: row.siteName,
     packageId: row.packageId,
+    status: row.status,
+    idTag: row.idTag,
     kwhDelivered: row.kwhDelivered,
     energyChargePhp: row.energyChargePhp,
     hostSharePhp: row.hostSharePhp,
     platformSharePhp: row.platformSharePhp,
     pspFeePhp: row.pspFeePhp,
+    createdAt: row.createdAt.toISOString(),
     startedAt: row.startedAt?.toISOString() ?? null,
     stoppedAt: row.stoppedAt?.toISOString() ?? null,
   }));
 
   return jsonResponse(200, { sessions });
+}
+
+// ─── handleAdminExpireSession ─────────────────────────────────────────────────
+// POST /admin/expire-session — bench-test cleanup utility. Forces a session
+// (e.g. a preflight/smoke-test checkout) into 'expired' so it stops blocking
+// the connector's availability check in handleCheckout (routes.ts).
+
+const ExpireSessionRequestSchema = z.object({
+  sessionId: z.string().uuid(),
+});
+
+export async function handleAdminExpireSession(ctx: RequestContext): Promise<HttpResponse> {
+  let parsedBody: unknown;
+  try {
+    parsedBody = parseJsonBody(ctx.rawBody);
+  } catch {
+    return jsonResponse(400, { error: 'invalid_json_body' });
+  }
+
+  const bodyParsed = ExpireSessionRequestSchema.safeParse(parsedBody);
+  if (!bodyParsed.success) {
+    return jsonResponse(400, { error: 'invalid_expire_session_payload' });
+  }
+
+  const updatedRows = await ctx.db
+    .update(schema.sessions)
+    .set({
+      status: 'expired',
+      authExpiresAt: new Date(Date.now() - 60_000),
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.sessions.id, bodyParsed.data.sessionId))
+    .returning({ id: schema.sessions.id });
+
+  const updated = updatedRows[0];
+  if (updated === undefined) {
+    return jsonResponse(404, { error: 'session_not_found' });
+  }
+
+  return jsonResponse(200, { sessionId: updated.id, status: 'expired' });
 }
 
 // ─── handleHostEarnings ───────────────────────────────────────────────────────

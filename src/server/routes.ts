@@ -41,6 +41,7 @@ export type HttpResponse = {
 export type RequestContext = {
   readonly method: HttpMethod;
   readonly pathname: string;
+  readonly searchParams: URLSearchParams;
   readonly headers: IncomingHttpHeaders;
   readonly rawBody: string;
   readonly db: SettlementDb;
