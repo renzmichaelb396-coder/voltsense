@@ -16,3 +16,13 @@ services:
         sync: false
       - key: VOLTSENSE_SHIELD_PASSWORD
         sync: false
+      # OCPP Security Profile 1 — B26471 Basic Auth (OCPPSetTool)
+      - key: OCPP_AUTH_USER
+        sync: false
+      - key: OCPP_AUTH_PASSWORD
+        sync: false
+      # Go Hotels host-earnings.html → GET /host/earnings (NOT /admin/earnings)
+      - key: HOST_AUTH_USER
+        sync: false
+      - key: HOST_AUTH_PASSWORD
+        sync: false
