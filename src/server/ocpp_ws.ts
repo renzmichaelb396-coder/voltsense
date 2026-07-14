@@ -427,13 +427,23 @@ export async function startOcppWsListener(
 
     httpServer.on('upgrade', (req: IncomingMessage, socket, head) => {
       const url = req.url ?? '';
+      const peer = req.socket.remoteAddress ?? 'unknown';
+      const proto = req.headers['sec-websocket-protocol'] ?? '(none)';
+      const hasAuth = req.headers.authorization !== undefined;
+      console.log(
+        `[voltsense:ocpp] WS upgrade attempt — peer=${peer} url=${url} subprotocol=${proto} hasAuth=${String(hasAuth)}`,
+      );
       if (!url.startsWith('/ocpp/')) {
+        console.log(`[voltsense:ocpp] WS upgrade rejected — path does not start with /ocpp/`);
         socket.destroy();
         return;
       }
       const info = { origin: req.headers.origin ?? '', req, secure: false };
       verifyClient(info, (allowed, code, message) => {
         if (!allowed) {
+          console.log(
+            `[voltsense:ocpp] WS upgrade rejected — auth failed (${code ?? 401} ${message ?? 'Unauthorized'}) peer=${peer} subprotocol=${proto} hasAuth=${String(hasAuth)}`,
+          );
           socket.write(`HTTP/1.1 ${code ?? 401} ${message ?? 'Unauthorized'}\r\n\r\n`);
           socket.destroy();
           return;
