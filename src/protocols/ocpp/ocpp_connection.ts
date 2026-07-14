@@ -311,6 +311,15 @@ const STALE_CHARGING_THRESHOLD_MS = 4 * 60 * 60 * 1000; // 4 hours
 
 const PARTIAL_REFUND_UNUSED_KWH_THRESHOLD = new Decimal('0.1');
 
+// ─── Abandoned session auto-expiry ─────────────────────────────────────────────
+// awaiting_payment sessions the customer never paid for, and payment_cleared
+// sessions where payment cleared but the charger never picked up the
+// RemoteStartTransaction — both leave the connector permanently blocked for
+// new checkouts (§Fix 2) if never cleared.
+
+const AWAITING_PAYMENT_EXPIRY_MS = 2 * 60 * 60 * 1000; // 2 hours
+const PAYMENT_CLEARED_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
+
 // ─── Transaction ID counter ───────────────────────────────────────────────────
 // Module-level sequence: monotonically increasing per CSMS process lifetime.
 // For multi-process deployments, replace with a PostgreSQL SERIAL sequence lookup.
@@ -566,6 +575,11 @@ export class OcppConnection {
   }
 
   private async resumePendingSessions(db: SettlementDb): Promise<void> {
+    // Must run before the retry query below — an abandoned payment_cleared
+    // session that's about to be expired must not also get caught up in this
+    // same reconnect sweep and issued a RemoteStartTransaction.
+    await this.expireAbandonedSessions(db);
+
     const rows = await db
       .select()
       .from(schema.sessions)
@@ -594,6 +608,83 @@ export class OcppConnection {
     }
 
     await this.warnStaleChargingSessions(db);
+  }
+
+  // ─── Abandoned session auto-expiry (§Fix 2) ────────────────────────────────
+  // Runs first in the reconnect sweep. Deliberately unbounded (no .limit()) —
+  // this only ever expires/logs, it never dispatches to the charge point, so
+  // there's no burst risk from clearing every abandoned row at once.
+
+  private async expireAbandonedSessions(db: SettlementDb): Promise<void> {
+    try {
+      const awaitingPaymentCutoff = new Date(Date.now() - AWAITING_PAYMENT_EXPIRY_MS);
+      const staleAwaitingPayment = await db
+        .select({ id: schema.sessions.id })
+        .from(schema.sessions)
+        .where(
+          and(
+            eq(schema.sessions.chargePointId, this.chargePointId),
+            eq(schema.sessions.status, 'awaiting_payment'),
+            lt(schema.sessions.createdAt, awaitingPaymentCutoff),
+          ),
+        );
+
+      for (const session of staleAwaitingPayment) {
+        await db
+          .update(schema.sessions)
+          .set({ status: 'expired', updatedAt: new Date() })
+          .where(eq(schema.sessions.id, session.id));
+      }
+      if (staleAwaitingPayment.length > 0) {
+        console.log(
+          `[voltsense:ocpp] auto-expired ${staleAwaitingPayment.length} abandoned awaiting_payment session(s) chargePointId=${this.chargePointId}`,
+        );
+      }
+
+      const paymentClearedCutoff = new Date(Date.now() - PAYMENT_CLEARED_EXPIRY_MS);
+      const stalePaymentCleared = await db
+        .select({ id: schema.sessions.id })
+        .from(schema.sessions)
+        .where(
+          and(
+            eq(schema.sessions.chargePointId, this.chargePointId),
+            eq(schema.sessions.status, 'payment_cleared'),
+            lt(schema.sessions.createdAt, paymentClearedCutoff),
+          ),
+        );
+
+      for (const session of stalePaymentCleared) {
+        await db
+          .update(schema.sessions)
+          .set({ status: 'expired', updatedAt: new Date() })
+          .where(eq(schema.sessions.id, session.id));
+
+        const paidPayments = await db
+          .select({ id: schema.payments.id })
+          .from(schema.payments)
+          .where(and(eq(schema.payments.sessionId, session.id), eq(schema.payments.status, 'paid')))
+          .orderBy(desc(schema.payments.paidAt))
+          .limit(1);
+
+        const payment = paidPayments[0];
+        if (payment !== undefined) {
+          await db
+            .update(schema.payments)
+            .set({ status: 'refund_failed', updatedAt: new Date() })
+            .where(eq(schema.payments.id, payment.id));
+        }
+
+        console.error(
+          `[voltsense:ocpp] ERROR auto-expired stale payment_cleared session=${session.id} chargePointId=${this.chargePointId} — ` +
+            `paid but charger never connected within 30 min` +
+            `${payment !== undefined ? `; payment=${payment.id} flagged refund_failed for manual review` : '; no paid payment found to flag'}`,
+        );
+      }
+    } catch (err) {
+      console.error(
+        `[voltsense:ocpp] failed to expire abandoned sessions chargePointId=${this.chargePointId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   // ─── Stuck 'charging' session sweep (logging only, §Fix 1) ────────────────
@@ -801,7 +892,8 @@ export class OcppConnection {
           );
         } else {
           console.warn(
-            `[voltsense:ocpp] StopTransaction for untracked transactionId=${payload.transactionId} chargePointId=${this.chargePointId} (no charging session to mark lost_transaction)`,
+            `[voltsense:ocpp] WARNING StopTransaction transactionId=${payload.transactionId} chargePointId=${this.chargePointId} ` +
+              `has no matching session — possible duplicate or orphan. Settlement skipped.`,
           );
         }
         return;

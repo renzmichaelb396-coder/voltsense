@@ -9,17 +9,24 @@
 <p>Hang tight while we connect to the charger.</p>
 </div>
 
-<div class="state" id="successState">
+<div class="state" id="chargingState">
 <div class="icon success"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
-<h2>Charging started ⚡</h2>
-<p>Your session is active. The charger is running.</p>
-<p class="note">You can close this page. Charging will continue.</p>
+<h2>Charging ⚡</h2>
+<p id="chargingProgress">0.00 kWh delivered</p>
+<p class="note" id="chargingEta"></p>
+<p class="note">You can close this page. Reopen this link anytime to check progress.</p>
 </div>
 
-<div class="state" id="timeoutState">
+<div class="state" id="completedState">
+<div class="icon success"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
+<h2>Charging complete ⚡</h2>
+<p id="completedSummary">Session finished.</p>
+</div>
+
+<div class="state" id="expiredState">
 <div class="icon timeout">⏱</div>
-<h2>Taking longer than expected.</h2>
-<p>Your payment was received. If the charger hasn't started within 2 minutes, contact the site host.</p>
+<h2>Session ended.</h2>
+<p>This charging session is no longer active. If you were charging and this looks wrong, contact the site host.</p>
 </div>
 
 <div class="state" id="errorState">
@@ -32,52 +39,77 @@
 </main>
 <footer>Powered by GCash · Maya · PayMongo</footer>
 <script>
-const STATUS_URL = 'https://voltsense-pmfq.onrender.com/ocpp/status';
-const POLL_INTERVAL_MS = 3000;
-const TIMEOUT_MS = 90000;
+const API_BASE = 'https://voltsense-pmfq.onrender.com';
+const PENDING_POLL_MS = 3000;
+const CHARGING_POLL_MS = 10000;
 
 function getParam(name) {
   return new URLSearchParams(window.location.search).get(name);
 }
 
 function showState(id) {
-  ['loadingState', 'successState', 'timeoutState', 'errorState'].forEach((stateId) => {
+  ['loadingState', 'chargingState', 'completedState', 'expiredState', 'errorState'].forEach((stateId) => {
     document.getElementById(stateId).classList.toggle('active', stateId === id);
   });
 }
 
-function isChargingForSession(data, sessionId) {
-  if (!data) return false;
-  const activeSessions = Array.isArray(data.activeSessions) ? data.activeSessions : [];
-  const matchesSession = activeSessions.some((s) => s && s.sessionId === sessionId);
-  if (matchesSession) return true;
-  const chargePoints = Array.isArray(data.chargePoints) ? data.chargePoints : [];
-  return chargePoints.some((cp) => cp && cp.ocppState === 'CHARGING');
+function formatKwh(value) {
+  return `${value.toFixed(2)} kWh delivered`;
 }
 
-function pollStatus(sessionId) {
-  const startedAt = Date.now();
+function formatEta(minutes) {
+  if (minutes === null || minutes === undefined) return '';
+  if (minutes <= 0) return 'Finishing up…';
+  if (minutes < 60) return `Est. ${Math.round(minutes)} min remaining`;
+  const hrs = Math.floor(minutes / 60);
+  const mins = Math.round(minutes % 60);
+  return `Est. ${hrs}h ${mins}m remaining`;
+}
 
+// No hard timeout — this page polls indefinitely until the session reaches a
+// terminal status (completed/expired). The customer may reopen this link
+// from a fresh tab at any time and pick up exactly where the session is.
+function pollStatus(sessionId) {
   const tick = async () => {
-    if (Date.now() - startedAt > TIMEOUT_MS) {
-      showState('timeoutState');
+    let data;
+    try {
+      const res = await fetch(`${API_BASE}/session-status?sessionId=${encodeURIComponent(sessionId)}`);
+      if (!res.ok) {
+        setTimeout(tick, PENDING_POLL_MS);
+        return;
+      }
+      data = await res.json();
+    } catch (err) {
+      // Network errors during polling are expected transiently — keep polling.
+      setTimeout(tick, PENDING_POLL_MS);
       return;
     }
 
-    try {
-      const res = await fetch(STATUS_URL);
-      if (res.ok) {
-        const data = await res.json();
-        if (isChargingForSession(data, sessionId)) {
-          showState('successState');
-          return;
-        }
-      }
-    } catch (err) {
-      // Network errors during polling are expected transiently — keep polling until timeout.
+    const status = data && data.status;
+
+    if (status === 'charging') {
+      showState('chargingState');
+      document.getElementById('chargingProgress').textContent = formatKwh(Number(data.kwhDelivered) || 0);
+      document.getElementById('chargingEta').textContent = formatEta(data.estimatedRemaining);
+      setTimeout(tick, CHARGING_POLL_MS);
+      return;
     }
 
-    setTimeout(tick, POLL_INTERVAL_MS);
+    if (status === 'completed') {
+      showState('completedState');
+      document.getElementById('completedSummary').textContent =
+        `${(Number(data.kwhDelivered) || 0).toFixed(2)} kWh delivered. Thanks for charging with VoltSense.`;
+      return;
+    }
+
+    if (status === 'expired' || status === 'cancelled' || status === 'lost_transaction') {
+      showState('expiredState');
+      return;
+    }
+
+    // awaiting_payment / payment_cleared / paid_charger_offline / authorized — still starting up.
+    showState('loadingState');
+    setTimeout(tick, PENDING_POLL_MS);
   };
 
   tick();

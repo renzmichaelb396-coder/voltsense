@@ -21,7 +21,7 @@ import {
 const REALM = 'VoltSense Secure Surface';
 
 // Paths the browser (charge.html on Vercel) is allowed to call directly.
-const CORS_PUBLIC_PATHS: ReadonlySet<string> = new Set(['/checkout', '/health', '/ocpp/status']);
+const CORS_PUBLIC_PATHS: ReadonlySet<string> = new Set(['/checkout', '/health', '/ocpp/status', '/session-status']);
 
 const CORS_HEADERS: Readonly<Record<string, string>> = {
   'Access-Control-Allow-Origin': '*',

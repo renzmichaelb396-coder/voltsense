@@ -668,6 +668,60 @@ function handleHealth(_ctx: RequestContext): HttpResponse {
   return jsonResponse(200, { status: 'ok', ts: Date.now() });
 }
 
+// ─── Session status page (§Fix 3) ──────────────────────────────────────────────
+// Public, no auth — the customer-facing charging-started.html page polls this
+// so progress survives a browser close/reopen (unlike the in-memory-only
+// /ocpp/status feed, this reads the persisted session row).
+
+async function handleSessionStatus(ctx: RequestContext): Promise<HttpResponse> {
+  const sessionId = ctx.searchParams.get('sessionId');
+  if (sessionId === null || sessionId.length === 0) {
+    return jsonResponse(400, { error: 'session_id_required' });
+  }
+
+  const sessionRows = await ctx.db
+    .select()
+    .from(schema.sessions)
+    .where(eq(schema.sessions.id, sessionId))
+    .limit(1);
+
+  const session = sessionRows[0];
+  if (session === undefined) {
+    return jsonResponse(404, { error: 'session_not_found' });
+  }
+
+  let kwhDelivered = 0;
+  let estimatedRemaining: number | null = null;
+
+  if (session.status === 'charging') {
+    const live = getActiveSessionSummaries().find((s) => s.sessionId === session.id);
+    const meterStartWh = session.meterStartWh ?? 0;
+    const lastMeterWh = live?.lastMeterWh ?? meterStartWh;
+    kwhDelivered = Math.max(0, (lastMeterWh - meterStartWh) / 1000);
+
+    // Estimate from the average delivery rate so far — no remaining estimate
+    // for PKG_FULL (no kWh cap) or before any energy has actually been delivered.
+    if (session.maxKwh !== null && session.startedAt !== null && kwhDelivered > 0) {
+      const elapsedMin = (Date.now() - session.startedAt.getTime()) / 60_000;
+      const ratePerMin = kwhDelivered / elapsedMin;
+      const remainingKwh = Number(session.maxKwh) - kwhDelivered;
+      estimatedRemaining = ratePerMin > 0 ? Math.max(0, Math.round(remainingKwh / ratePerMin)) : null;
+    }
+  } else if (session.kwhDelivered !== null) {
+    kwhDelivered = Number(session.kwhDelivered);
+  }
+
+  return {
+    statusCode: 200,
+    headers: JSON_HEADERS,
+    body: JSON.stringify({
+      status: session.status,
+      kwhDelivered: Number(kwhDelivered.toFixed(3)),
+      estimatedRemaining,
+    }),
+  };
+}
+
 function handleOcppStatus(_ctx: RequestContext): HttpResponse {
   const chargePoints = getChargePointStatuses();
   const activeSessions = getActiveSessionSummaries();
@@ -700,6 +754,12 @@ export const ROUTE_TABLE: readonly RouteDefinition[] = [
     pathname: '/ocpp/status',
     auth: 'public',
     handler: handleOcppStatus,
+  },
+  {
+    method: 'GET',
+    pathname: '/session-status',
+    auth: 'public',
+    handler: handleSessionStatus,
   },
   {
     method: 'GET',
