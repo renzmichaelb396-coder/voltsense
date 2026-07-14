@@ -61,6 +61,8 @@ export const paymentStatusEnum = pgEnum('payment_status', [
   'failed',
   'amount_mismatch',
   'refunded',
+  'partially_refunded',
+  'refund_failed',
 ]);
 
 export const splitRecipientRoleEnum = pgEnum('split_recipient_role', [

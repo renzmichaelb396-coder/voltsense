@@ -2,7 +2,7 @@
 // Inspector rule: action: string or payload: any in this file = P0 weld violation.
 
 import { Decimal } from 'decimal.js';
-import { and, asc, desc, eq, gt, inArray, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
 
 import * as schema from '../../db/schema.js';
 import { executeRevenueSplitOrRefund, type SettlementDb } from '../../services/settlement.js';
@@ -295,6 +295,22 @@ export function buildCallResultFrame(messageId: string, payload: CallResultPaylo
 
 const ZERO_KWH_THRESHOLD = new Decimal('0.05'); // 50 Wh tolerance for meter noise
 
+// ─── Stuck 'charging' session detection (Render restart recovery) ────────────
+// A session that has sat in 'charging' this long with no StopTransaction is
+// suspicious (charger may have missed the frame, or the CSMS process restarted
+// and lost the in-memory activeTransactions entry). Logged only — never
+// auto-expired, since the charge point may still legitimately be mid-session
+// and could send StopTransaction at any time.
+
+const STALE_CHARGING_THRESHOLD_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+// ─── Partial refund gate ───────────────────────────────────────────────────────
+// A prepaid package session (maxKwh set) that delivers meaningfully less than
+// the paid-for kWh gets the unused portion refunded. Threshold avoids dust
+// refunds from meter rounding noise.
+
+const PARTIAL_REFUND_UNUSED_KWH_THRESHOLD = new Decimal('0.1');
+
 // ─── Transaction ID counter ───────────────────────────────────────────────────
 // Module-level sequence: monotonically increasing per CSMS process lifetime.
 // For multi-process deployments, replace with a PostgreSQL SERIAL sequence lookup.
@@ -576,6 +592,47 @@ export class OcppConnection {
       // RemoteStartTransaction calls at a charge point the instant it reconnects.
       await this.retryRemoteStart(db, session);
     }
+
+    await this.warnStaleChargingSessions(db);
+  }
+
+  // ─── Stuck 'charging' session sweep (logging only, §Fix 1) ────────────────
+  // Runs after the main retry pass. Deliberately does not use .limit() on this
+  // query (unlike the capped retry sweep above) — it only ever logs, never
+  // mutates state, so there's no burst risk from returning every stale row.
+
+  private async warnStaleChargingSessions(db: SettlementDb): Promise<void> {
+    try {
+      const cutoff = new Date(Date.now() - STALE_CHARGING_THRESHOLD_MS);
+      const staleRows = await db
+        .select({ id: schema.sessions.id, startedAt: schema.sessions.startedAt })
+        .from(schema.sessions)
+        .where(
+          and(
+            eq(schema.sessions.chargePointId, this.chargePointId),
+            eq(schema.sessions.status, 'charging'),
+            lt(schema.sessions.startedAt, cutoff),
+          ),
+        )
+        .orderBy(asc(schema.sessions.startedAt));
+
+      for (const session of staleRows) {
+        const startedAt = session.startedAt;
+        if (startedAt === null) {
+          continue;
+        }
+        const durationHours = (Date.now() - startedAt.getTime()) / (60 * 60 * 1000);
+        console.warn(
+          `[voltsense:ocpp] WARNING session stuck in 'charging' status — sessionId=${session.id} ` +
+            `chargePointId=${this.chargePointId} durationHours=${durationHours.toFixed(2)} — ` +
+            `no StopTransaction received. Not auto-expiring; charger may still send one.`,
+        );
+      }
+    } catch (err) {
+      console.error(
+        `[voltsense:ocpp] failed to check for stale charging sessions on chargePointId=${this.chargePointId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   // ─── ChangeConfiguration (fire-and-forget from BootNotification) ──────────
@@ -827,6 +884,59 @@ export class OcppConnection {
         return;
       }
 
+      // §Fix 3: prepaid package delivered less kWh than paid for — refund the
+      // unused portion. maxKwh is null for PKG_FULL (no cap, nothing unused).
+      if (session.maxKwh !== null) {
+        const maxKwhDec = new Decimal(session.maxKwh);
+        const unusedKwh = maxKwhDec.minus(kwhDelivered);
+
+        if (unusedKwh.greaterThan(PARTIAL_REFUND_UNUSED_KWH_THRESHOLD)) {
+          const tariffPerKwh = new Decimal(session.snapshotDuRatePerKwh)
+            .plus(session.snapshotHostMarginPerKwh)
+            .plus(session.snapshotPlatformFeePerKwh);
+          const refundAmountCents = Math.round(unusedKwh.times(tariffPerKwh).times(100).toNumber());
+          const refundAmountPhp = (refundAmountCents / 100).toFixed(6);
+
+          try {
+            const partialRefundConfig = loadRefundConfigFromEnv();
+            const partialRefundResult = await dispatchRefund(
+              {
+                paymentId: payment.id,
+                psp: payment.psp,
+                externalId: payment.externalId,
+                amountPhp: refundAmountPhp,
+                reason: 'partial_kwh',
+              },
+              partialRefundConfig,
+            );
+
+            if (partialRefundResult.outcome === 'success') {
+              await db
+                .update(schema.payments)
+                .set({ status: 'partially_refunded', updatedAt: new Date() })
+                .where(eq(schema.payments.id, payment.id));
+              console.log(
+                `[voltsense:settle] partial refund ₱${refundAmountPhp} for ${unusedKwh.toFixed(6)} unused kWh session=${session.id}`,
+              );
+            } else {
+              // Never throw — settlement below must still complete so the
+              // session closes; ops reviews refund_failed payments manually.
+              await db
+                .update(schema.payments)
+                .set({ status: 'refund_failed', updatedAt: new Date() })
+                .where(eq(schema.payments.id, payment.id));
+              console.error(
+                `[voltsense:ocpp] partial refund FAILED for session=${session.id} amount=₱${refundAmountPhp} — manual review needed`,
+              );
+            }
+          } catch (err) {
+            console.error(
+              `[voltsense:ocpp] partial refund error for session=${session.id} amount=₱${refundAmountPhp}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+      }
+
       const chargePointRows = await db
         .select({ siteId: schema.chargePoints.siteId })
         .from(schema.chargePoints)
@@ -877,6 +987,14 @@ export class OcppConnection {
     }
     const lastMeterWh = extractEnergyActiveImportWh(payload);
     if (lastMeterWh === null) {
+      // Do NOT silently skip — this must be visible in bench test logs before
+      // Go Hotels install, since it means kWh cutoff enforcement is disabled
+      // for this session (§Fix 2).
+      console.warn(
+        `[voltsense:ocpp] WARNING MeterValues received but no Energy measurand found — ` +
+          `kWh cutoff disabled for this session. sessionId=${tracked.sessionId} chargePointId=${this.chargePointId} ` +
+          `Raw sampledValue: ${JSON.stringify(payload.meterValue)}`,
+      );
       return;
     }
     tracked.lastMeterWh = lastMeterWh;

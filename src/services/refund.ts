@@ -37,7 +37,8 @@ export type RefundReason =
   | 'hardware_timeout'    // StartTransaction.conf not received within 30 s (§1.5.9)
   | 'charger_offline'     // CP offline at payment time (§1.3.6)
   | 'zero_kwh'            // StopTransaction with 0 kWh within 5 min (§1.3.7)
-  | 'amount_mismatch';    // Webhook amount ≠ session hold_amount_php (§1.3.4)
+  | 'amount_mismatch'     // Webhook amount ≠ session hold_amount_php (§1.3.4)
+  | 'partial_kwh';        // StopTransaction delivered less than the prepaid package kWh
 
 export type RefundRequest = {
   paymentId: string;    // VoltSense internal UUID — doubles as idempotency key prefix
@@ -100,6 +101,7 @@ function toPayMongoRefundReason(reason: RefundReason): string {
     case 'charger_offline':
     case 'zero_kwh':
     case 'amount_mismatch':
+    case 'partial_kwh':
       return 'others';
     default:
       return assertNever(reason);
