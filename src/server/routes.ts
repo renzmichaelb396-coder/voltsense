@@ -774,6 +774,7 @@ async function handleSessionStatus(ctx: RequestContext): Promise<HttpResponse> {
       status: session.status,
       kwhDelivered: Number(kwhDelivered.toFixed(3)),
       estimatedRemaining,
+      completedAt: session.stoppedAt?.toISOString() ?? null,
     }),
   };
 }

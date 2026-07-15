@@ -30,6 +30,7 @@ import * as schema from '../src/db/schema.js';
 loadDotenv();
 
 const BASE = 'https://voltsense-pmfq.onrender.com';
+const STATIC = 'https://voltsense-csms.vercel.app';
 const CP_ID = '33333333-3333-3333-3333-333333333333';
 const CONNECTOR_ID = 1;
 const FAKE_ID = '00000000-0000-0000-0000-000000000000';
@@ -136,6 +137,12 @@ async function getJson(path: string, headers: Record<string, string> = {}): Prom
   return { status: res.status, json, text };
 }
 
+async function getStatic(path: string): Promise<JsonResult> {
+  const res = await fetch(`${STATIC}${path}`); // fetch() follows redirects by default
+  const text = await res.text();
+  return { status: res.status, json: undefined, text };
+}
+
 function basicAuthHeader(username: string, password: string): string {
   return `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
 }
@@ -197,6 +204,26 @@ const results: { id: string; pass: boolean; detail: string }[] = [];
 function record(id: string, pass: boolean, detail: string): void {
   results.push({ id, pass, detail });
 }
+
+// ─── shared helpers for Phases A–E (added below; Phases 1–7 above are untouched) ──
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function checkoutCreatedInvariant(res: JsonResult): boolean {
+  return (
+    res.status === 201 &&
+    typeof res.json?.sessionId === 'string' &&
+    UUID_RE.test(res.json.sessionId) &&
+    typeof res.json?.checkoutUrl === 'string' &&
+    res.json.checkoutUrl.startsWith('https://') &&
+    res.json !== null &&
+    typeof res.json === 'object' &&
+    !Object.prototype.hasOwnProperty.call(res.json, 'amountPhp')
+  );
+}
+
+// Set by Phase A's A2 test, consumed by Phase B's B4 test.
+let sharedCustomSessionId: string | undefined;
 
 // ─── PHASE 1 — health ──────────────────────────────────────────────────────
 
@@ -562,6 +589,685 @@ describe('Phase 6: injection', () => {
       const res = await postJson('/checkout', validCheckoutBody({ connectorId: 'abc' }), isolatedIp('P6c'));
       record('P6c', res.status === 400, `status=${res.status} body=${res.text.slice(0, 200)}`);
       expect(res.status).toBe(400);
+    },
+    30_000,
+  );
+});
+
+// ─── PHASE A — PKG_CUSTOM edge cases (POST /checkout) ─────────────────────
+
+describe('Phase A: PKG_CUSTOM edge cases', () => {
+  it(
+    'A1 customKwh=0.5 + PKG_CUSTOM -> 400 (Zod min 1)',
+    async () => {
+      const res = await postJson(
+        '/checkout',
+        validCheckoutBody({ packageId: 'PKG_CUSTOM', customKwh: 0.5 }),
+        isolatedIp('A1'),
+      );
+      record('A1', res.status === 400, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(400);
+    },
+    30_000,
+  );
+
+  it(
+    'A2 customKwh=100 + PKG_CUSTOM -> 201 (boundary valid)',
+    async () => {
+      await resetTestConnector();
+      const res = await postJson(
+        '/checkout',
+        validCheckoutBody({ packageId: 'PKG_CUSTOM', customKwh: 100 }),
+        isolatedIp('A2'),
+      );
+      const ok = checkoutCreatedInvariant(res);
+      record('A2', ok, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(201);
+      expect(res.json.sessionId).toMatch(UUID_RE);
+      expect(res.json.checkoutUrl).toMatch(/^https:\/\//);
+      expect(res.json).not.toHaveProperty('amountPhp');
+      sharedCustomSessionId = res.json.sessionId;
+    },
+    30_000,
+  );
+
+  it(
+    // co-located with A2 (Phase B's B4): must run before A4/A5 call
+    // resetTestConnector() again, which would expire A2's still-awaiting_payment
+    // session as a side effect of forcing the connector Available for their own checkout.
+    'B4 (Phase B) after PKG_CUSTOM A2 checkout -> status=awaiting_payment, kwhDelivered valid (no NaN)',
+    async () => {
+      // NOTE (deviation from literal spec): handleSessionStatus's response shape
+      // is {status, kwhDelivered, estimatedRemaining} only — it never exposes
+      // packageId or amountPhp (see handleSessionStatus in src/server/routes.ts).
+      // So "packageId=PKG_CUSTOM" and "no NaN in amountPhp" aren't checkable
+      // fields on this endpoint; the closest real, checkable invariant is that
+      // kwhDelivered — the one numeric field this endpoint does return — is a
+      // real number, never NaN.
+      expect(sharedCustomSessionId, 'A2 must run first and succeed').toBeDefined();
+      const res = await getJson(`/session-status?sessionId=${sharedCustomSessionId}`);
+      const ok =
+        res.status === 200 &&
+        res.json?.status === 'awaiting_payment' &&
+        typeof res.json?.kwhDelivered === 'number' &&
+        !Number.isNaN(res.json.kwhDelivered);
+      record('B4', ok, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(200);
+      expect(res.json.status).toBe('awaiting_payment');
+      expect(Number.isNaN(res.json.kwhDelivered)).toBe(false);
+    },
+    30_000,
+  );
+
+  it(
+    'A3 customKwh=101 + PKG_CUSTOM -> 400 (Zod max 100)',
+    async () => {
+      const res = await postJson(
+        '/checkout',
+        validCheckoutBody({ packageId: 'PKG_CUSTOM', customKwh: 101 }),
+        isolatedIp('A3'),
+      );
+      record('A3', res.status === 400, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(400);
+    },
+    30_000,
+  );
+
+  it(
+    'A4 customKwh=17.5 + PKG_CUSTOM -> 201 + checkoutUrl present',
+    async () => {
+      await resetTestConnector();
+      const res = await postJson(
+        '/checkout',
+        validCheckoutBody({ packageId: 'PKG_CUSTOM', customKwh: 17.5 }),
+        isolatedIp('A4'),
+      );
+      const ok = checkoutCreatedInvariant(res);
+      record('A4', ok, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(201);
+      expect(res.json.checkoutUrl).toMatch(/^https:\/\//);
+    },
+    30_000,
+  );
+
+  it(
+    'A5 PKG_FULL + customKwh=10 -> 201 (server ignores customKwh for non-CUSTOM pkg)',
+    async () => {
+      await resetTestConnector();
+      const res = await postJson(
+        '/checkout',
+        validCheckoutBody({ packageId: 'PKG_FULL', customKwh: 10 }),
+        isolatedIp('A5'),
+      );
+      const ok = checkoutCreatedInvariant(res);
+      record('A5', ok, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(201);
+    },
+    30_000,
+  );
+
+  it(
+    'A6 PKG_CUSTOM + no customKwh field -> 400',
+    async () => {
+      const res = await postJson(
+        '/checkout',
+        validCheckoutBody({ packageId: 'PKG_CUSTOM' }),
+        isolatedIp('A6'),
+      );
+      record('A6', res.status === 400, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(400);
+    },
+    30_000,
+  );
+
+  it(
+    'A7 PKG_CUSTOM + customKwh=NaN -> 400',
+    async () => {
+      // NOTE: JSON has no NaN literal — JSON.stringify(NaN) serializes to `null`
+      // on the wire. This exercises "customKwh present but not a valid number"
+      // (z.number() rejects null) rather than a literal NaN reaching the server,
+      // but the resulting 400 is the same either way.
+      const res = await postJson(
+        '/checkout',
+        validCheckoutBody({ packageId: 'PKG_CUSTOM', customKwh: NaN }),
+        isolatedIp('A7'),
+      );
+      record('A7', res.status === 400, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(400);
+    },
+    30_000,
+  );
+
+  it(
+    'A8 PKG_CUSTOM + customKwh=-5 -> 400',
+    async () => {
+      const res = await postJson(
+        '/checkout',
+        validCheckoutBody({ packageId: 'PKG_CUSTOM', customKwh: -5 }),
+        isolatedIp('A8'),
+      );
+      record('A8', res.status === 400, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(400);
+    },
+    30_000,
+  );
+
+  it(
+    'A9 packageId=INVALID_PKG -> 400',
+    async () => {
+      const res = await postJson(
+        '/checkout',
+        validCheckoutBody({ packageId: 'INVALID_PKG' }),
+        isolatedIp('A9'),
+      );
+      record('A9', res.status === 400, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(400);
+    },
+    30_000,
+  );
+});
+
+// ─── PHASE B — session status (GET /session-status; B4 ran above, co-located with A2) ──
+
+describe('Phase B: session status', () => {
+  it(
+    'B1 no sessionId param -> 400',
+    async () => {
+      const res = await getJson('/session-status');
+      record('B1', res.status === 400, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(400);
+    },
+    30_000,
+  );
+
+  it(
+    'B2 sessionId=well-formed uuid not in db -> 404',
+    async () => {
+      // NOTE: the task's literal phrasing ("not-a-uuid uuid-not-in-db") is
+      // ambiguous. handleSessionStatus queries Postgres with the raw string
+      // against a `uuid`-typed column, so a non-uuid-shaped string throws a
+      // driver-level error (500), not a clean 404 — see P3c above, which only
+      // asserts "not 500" for a SQLi string for exactly this reason. The
+      // literal 404 outcome only holds for a well-formed-but-absent uuid,
+      // which is what this test exercises (a freshly generated id, distinct
+      // from the FAKE_ID constant already covered by P3b).
+      const res = await getJson(`/session-status?sessionId=${randomUUID()}`);
+      record('B2', res.status === 404, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(404);
+    },
+    30_000,
+  );
+});
+
+// ─── PHASE C — webhook idempotency ─────────────────────────────────────────
+
+describe('Phase C: webhook idempotency', () => {
+  it(
+    'C1 payment.paid webhook, same paymentId sent twice -> 202 both times, second marked duplicate (not 500)',
+    async () => {
+      await resetTestConnector();
+      const checkoutRes = await postJson(
+        '/checkout',
+        validCheckoutBody({ packageId: 'PKG_5KWH' }),
+        isolatedIp('C1-checkout'),
+      );
+      expect(checkoutRes.status, `checkout must succeed to seed a payment row: ${checkoutRes.text}`).toBe(201);
+      const idempotencySessionId: string = checkoutRes.json.sessionId;
+
+      // NOTE (deviation from literal "200"): every success path in
+      // handlePayMongoWebhook returns 202 Accepted, never 200 — see P4c/P4c-alt
+      // above, which already establish this for the codebase. This asserts the
+      // real status (202) both times, with "not 500" as the safety invariant
+      // the task actually cares about (idempotent replay must never crash).
+      const rawBody = JSON.stringify(buildPaidPayload(idempotencySessionId));
+
+      const first = await postRaw('/webhooks/paymongo', rawBody, {
+        'Paymongo-Signature': signPaymongo(rawBody, String(Math.floor(Date.now() / 1000))),
+      });
+      const second = await postRaw('/webhooks/paymongo', rawBody, {
+        'Paymongo-Signature': signPaymongo(rawBody, String(Math.floor(Date.now() / 1000))),
+      });
+
+      const ok =
+        first.status === 202 &&
+        first.status !== 500 &&
+        second.status === 202 &&
+        second.status !== 500 &&
+        second.json?.duplicate === true;
+      record(
+        'C1',
+        ok,
+        `first status=${first.status} body=${first.text} | second status=${second.status} body=${second.text}`,
+      );
+      expect(first.status).toBe(202);
+      expect(second.status).toBe(202);
+      expect(second.json.duplicate).toBe(true);
+    },
+    30_000,
+  );
+
+  it(
+    'C2 checkout_session.payment.paid (alternate type) -> 202, same session-lookup path as payment.paid',
+    async () => {
+      // Uses an unmatched reference_number (like P4c) so the assertable, stable
+      // signal is the identical "session_not_found" outcome for both event-type
+      // strings — proving normalizePayMongoWebhook() routes
+      // checkout_session.payment.paid through the exact same session lookup as
+      // payment.paid (see src/webhooks/paymongo_types.ts).
+      const payload = buildPaidPayload(randomUUID());
+      (payload.data.attributes as any).type = 'checkout_session.payment.paid';
+      const rawBody = JSON.stringify(payload);
+      const res = await postRaw('/webhooks/paymongo', rawBody, {
+        'Paymongo-Signature': signPaymongo(rawBody, String(Math.floor(Date.now() / 1000))),
+      });
+      const ok = res.status === 202 && res.json?.accepted === true && res.json?.error === 'session_not_found';
+      record('C2', ok, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(202);
+      expect(res.json.error).toBe('session_not_found');
+    },
+    30_000,
+  );
+});
+
+// ─── PHASE D — rate limiter ─────────────────────────────────────────────────
+
+describe('Phase D: rate limiter (5/min per identity)', () => {
+  const RATE_LIMIT_IP_D = { 'X-Forwarded-For': `10.43.201.201-ratelimit-phase-d-${randomUUID()}` };
+
+  it(
+    'D1 5 valid POST /checkout, same X-Forwarded-For -> all 201',
+    async () => {
+      // NOTE: the connector only allows one active (non-terminal) session at a
+      // time, so 5 back-to-back checkouts on the SAME connector would otherwise
+      // 409 after the first. resetTestConnector() between calls forces the
+      // connector back to Available so each of the 5 genuinely exercises a
+      // fresh 201, while all 5 still count against the SAME rate-limit bucket
+      // (the limiter check runs before body/connector validation — see file
+      // header note on resolveClientIp()).
+      const statuses: number[] = [];
+      for (let i = 0; i < 5; i++) {
+        await resetTestConnector();
+        const res = await postJson('/checkout', validCheckoutBody(), RATE_LIMIT_IP_D);
+        statuses.push(res.status);
+      }
+      const ok = statuses.every((s) => s === 201);
+      record('D1', ok, `statuses=${statuses.join(',')}`);
+      expect(statuses).toEqual([201, 201, 201, 201, 201]);
+    },
+    60_000,
+  );
+
+  it(
+    'D2 6th POST /checkout, same X-Forwarded-For -> 429',
+    async () => {
+      await resetTestConnector();
+      const res = await postJson('/checkout', validCheckoutBody(), RATE_LIMIT_IP_D);
+      const ok = res.status === 429 && res.json?.error === 'too_many_requests';
+      record('D2', ok, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(429);
+      expect(res.json.error).toBe('too_many_requests');
+    },
+    30_000,
+  );
+});
+
+// ─── PHASE E — admin gate (GET /admin/sessions) ────────────────────────────
+
+describe('Phase E: admin gate (GET /admin/sessions)', () => {
+  it(
+    'E1 no Authorization header -> 401',
+    async () => {
+      const res = await getJson('/admin/sessions');
+      record('E1', res.status === 401, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(401);
+    },
+    30_000,
+  );
+
+  it(
+    'E2 wrong credentials -> 401',
+    async () => {
+      const res = await getJson('/admin/sessions', {
+        Authorization: basicAuthHeader('not-admin', 'not-the-password'),
+      });
+      record('E2', res.status === 401, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(401);
+    },
+    30_000,
+  );
+
+  it(
+    'E3 correct VOLTSENSE_SHIELD_USER/PASSWORD -> 200 + sessions array',
+    async () => {
+      // NOTE (deviation from literal "array body"): handleAdminSessions returns
+      // {sessions: [...]}, not a bare top-level array (see admin_routes.ts) —
+      // the checkable invariant is that the `sessions` field is an array.
+      const res = await getJson('/admin/sessions', {
+        Authorization: basicAuthHeader(SHIELD_USER!, SHIELD_PASSWORD!),
+      });
+      const ok = res.status === 200 && Array.isArray(res.json?.sessions);
+      record('E3', ok, `status=${res.status} body=${res.text.slice(0, 300)}`);
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.json.sessions)).toBe(true);
+    },
+    30_000,
+  );
+});
+
+// ─── PHASE F — footer / static page consistency (STATIC, Vercel) ──────────
+
+describe('Phase F: footer / static page consistency', () => {
+  it(
+    'F1 GET /charge.html -> 200, body does NOT contain "GCash" or "Maya"',
+    async () => {
+      const res = await getStatic('/charge.html');
+      const hasGCash = /gcash/i.test(res.text);
+      const hasMaya = /maya/i.test(res.text);
+      const ok = res.status === 200 && !hasGCash && !hasMaya;
+      record(
+        'F1',
+        ok,
+        ok
+          ? `status=${res.status}`
+          : `BUG: status=${res.status} footer still advertises unapproved PSPs ` +
+              `(hasGCash=${hasGCash} hasMaya=${hasMaya}) — "Powered by GCash · Maya · PayMongo" ` +
+              `misleads customers since only PayMongo is live`,
+      );
+      expect(res.status).toBe(200);
+      expect(hasGCash).toBe(false);
+      expect(hasMaya).toBe(false);
+    },
+    30_000,
+  );
+
+  it(
+    'F2 GET /charging-started.html -> 200, body does NOT contain "GCash" or "Maya"',
+    async () => {
+      const res = await getStatic('/charging-started.html');
+      const hasGCash = /gcash/i.test(res.text);
+      const hasMaya = /maya/i.test(res.text);
+      const ok = res.status === 200 && !hasGCash && !hasMaya;
+      record(
+        'F2',
+        ok,
+        ok
+          ? `status=${res.status}`
+          : `BUG: status=${res.status} footer still advertises unapproved PSPs ` +
+              `(hasGCash=${hasGCash} hasMaya=${hasMaya}) — same "Powered by GCash · Maya · PayMongo" footer as charge.html`,
+      );
+      expect(res.status).toBe(200);
+      expect(hasGCash).toBe(false);
+      expect(hasMaya).toBe(false);
+    },
+    30_000,
+  );
+
+  it(
+    'F3 GET /payment-cancelled.html -> 200, has "Try Again" button + retry URL preserves cpid/cid',
+    async () => {
+      const res = await getStatic('/payment-cancelled.html');
+      const hasTryAgain = /try again/i.test(res.text);
+      // buildRetryUrl() reads ?cpid=&cid= from the current URL and reattaches
+      // them to the charge.html redirect — assert the script actually does this
+      // rather than just asserting the button text exists.
+      const preservesParams =
+        /getParam\(['"]cpid['"]\)/.test(res.text) &&
+        /getParam\(['"]cid['"]\)/.test(res.text) &&
+        /charge\.html\?cpid=/.test(res.text);
+      const ok = res.status === 200 && hasTryAgain && preservesParams;
+      record('F3', ok, `status=${res.status} hasTryAgain=${hasTryAgain} preservesParams=${preservesParams}`);
+      expect(res.status).toBe(200);
+      expect(hasTryAgain).toBe(true);
+      expect(preservesParams).toBe(true);
+    },
+    30_000,
+  );
+
+  it(
+    'F4 GET /charge.html -> body does NOT contain "for charging updates"',
+    async () => {
+      const res = await getStatic('/charge.html');
+      const ok = res.status === 200 && !res.text.includes('for charging updates');
+      record('F4', ok, `status=${res.status} containsOldCopy=${res.text.includes('for charging updates')}`);
+      expect(res.status).toBe(200);
+      expect(res.text).not.toContain('for charging updates');
+    },
+    30_000,
+  );
+
+  it(
+    'F5 GET /charge.html -> body contains "Choose a package"',
+    async () => {
+      const res = await getStatic('/charge.html');
+      const ok = res.status === 200 && res.text.includes('Choose a package');
+      record('F5', ok, `status=${res.status} containsHeader=${res.text.includes('Choose a package')}`);
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('Choose a package');
+    },
+    30_000,
+  );
+
+  it(
+    'F6 GET /charge.html -> custom kWh input max attribute = "120"',
+    async () => {
+      const res = await getStatic('/charge.html');
+      const match = res.text.match(/id="customKwhInput"[^>]*max="(\d+)"/);
+      const ok = res.status === 200 && match?.[1] === '120';
+      record('F6', ok, `status=${res.status} maxAttr=${match?.[1] ?? 'not found'}`);
+      expect(res.status).toBe(200);
+      expect(match?.[1]).toBe('120');
+    },
+    30_000,
+  );
+});
+
+// ─── PHASE G — checkout/session edge cases ─────────────────────────────────
+
+describe('Phase G: checkout/session edge cases', () => {
+  it(
+    'G1 valid checkout -> session-status returns status=awaiting_payment immediately (not 404)',
+    async () => {
+      await resetTestConnector();
+      const checkoutRes = await postJson('/checkout', validCheckoutBody(), isolatedIp('G1'));
+      expect(checkoutRes.status).toBe(201);
+      const res = await getJson(`/session-status?sessionId=${checkoutRes.json.sessionId}`);
+      const ok = res.status === 200 && res.json?.status === 'awaiting_payment';
+      record('G1', ok, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(200);
+      expect(res.json.status).toBe('awaiting_payment');
+    },
+    30_000,
+  );
+
+  it(
+    'G2 back-to-back /checkout on same CP_ID+CONNECTOR_ID -> second is 409, NOT a duplicate 201',
+    async () => {
+      // NOTE (deviation from literal spec): the task text assumes "no duplicate-
+      // session guard exists" and expects two 201s with distinct sessionIds. That
+      // assumption is wrong — handleCheckout (src/server/routes.ts) has an explicit
+      // secondary guard: it queries the sessions table for any row on this
+      // chargePointId+connectorId with status in ('payment_cleared','charging'), or
+      // 'awaiting_payment' with authExpiresAt still in the future (15-minute hold —
+      // CHECKOUT_AUTH_WINDOW_MS), and returns 409 connector_not_available if found.
+      // A fresh checkout's awaiting_payment hold is nowhere near expiring by the
+      // time the second request lands, so the real, correct behavior is 409 —
+      // this is a guard that WORKS, not a gap.
+      await resetTestConnector();
+      const first = await postJson('/checkout', validCheckoutBody(), isolatedIp('G2'));
+      expect(first.status).toBe(201);
+      const second = await postJson('/checkout', validCheckoutBody(), isolatedIp('G2'));
+      const ok = second.status === 409 && second.json?.error === 'connector_not_available';
+      record(
+        'G2',
+        ok,
+        `NOT A GAP (spec assumption wrong): first=${first.status} second=${second.status} body=${second.text} ` +
+          `— an active-session guard exists and correctly blocked the duplicate checkout`,
+      );
+      expect(second.status).toBe(409);
+      expect(second.json.error).toBe('connector_not_available');
+    },
+    30_000,
+  );
+
+  it(
+    'G3 session-status for an admin-expired session -> status="expired" (200) or 404, never 500',
+    async () => {
+      await resetTestConnector();
+      const checkoutRes = await postJson('/checkout', validCheckoutBody(), isolatedIp('G3'));
+      expect(checkoutRes.status).toBe(201);
+      const sessionId: string = checkoutRes.json.sessionId;
+
+      const expireRes = await postJson(
+        '/admin/expire-session',
+        { sessionId },
+        { Authorization: basicAuthHeader(SHIELD_USER!, SHIELD_PASSWORD!) },
+      );
+      expect(expireRes.status).toBe(200);
+
+      const res = await getJson(`/session-status?sessionId=${sessionId}`);
+      const ok = res.status === 404 || (res.status === 200 && res.json?.status === 'expired');
+      record('G3', ok && res.status !== 500, `status=${res.status} body=${res.text}`);
+      expect(res.status).not.toBe(500);
+      expect(ok).toBe(true);
+    },
+    30_000,
+  );
+});
+
+// ─── PHASE H — overstay data gap ───────────────────────────────────────────
+
+describe('Phase H: overstay data gap', () => {
+  it(
+    'H1 session-status response includes a completedAt field (partial live coverage — see note)',
+    async () => {
+      // No 'completed' sessions exist in the live database (verified by direct
+      // query during test authoring — the GoMandaloyo pilot hasn't gone live
+      // yet), and fabricating one via direct DB write would inject synthetic
+      // financial figures into the live /admin/earnings and /host/earnings
+      // aggregates (both SUM() over status='completed' sessions) — per explicit
+      // user direction, that mutation is out of scope for this test file.
+      //
+      // What IS verified live: handleSessionStatus (src/server/routes.ts) now
+      // maps session.stoppedAt -> completedAt (ISO string or null) unconditionally,
+      // the same column handleHostEarnings already projects as completedAt for
+      // completed sessions (admin_routes.ts) — so this checks the field exists
+      // in the response contract for a real, freshly-created session (where it's
+      // null pre-completion) rather than asserting its populated value for a
+      // 'completed' session, which no live data currently exists to exercise.
+      await resetTestConnector();
+      const checkoutRes = await postJson('/checkout', validCheckoutBody(), isolatedIp('H1'));
+      expect(checkoutRes.status).toBe(201);
+      const res = await getJson(`/session-status?sessionId=${checkoutRes.json.sessionId}`);
+      const hasField = res.json !== null && typeof res.json === 'object' && 'completedAt' in res.json;
+      const ok = res.status === 200 && hasField;
+      record(
+        'H1',
+        ok,
+        ok
+          ? `status=${res.status} body=${res.text} — field present (partial: no live 'completed'-status session ` +
+              `exists in prod to confirm the populated-value case, only that the field exists and is null pre-completion)`
+          : `FAIL: Server must return completedAt for accurate overstay countdown — client currently uses ` +
+              `Date.now() which drifts if page opened late. status=${res.status} body=${res.text}`,
+      );
+      expect(res.status).toBe(200);
+      expect(hasField).toBe(true);
+    },
+    30_000,
+  );
+});
+
+// ─── PHASE I — uncovered routes (smoke only) ───────────────────────────────
+
+describe('Phase I: uncovered routes (smoke)', () => {
+  it(
+    'I1 GET /health -> 200, body.status === "ok"',
+    async () => {
+      const res = await getJson('/health');
+      const ok = res.status === 200 && res.json?.status === 'ok';
+      record('I1', ok, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(200);
+      expect(res.json.status).toBe('ok');
+    },
+    30_000,
+  );
+
+  it(
+    'I2 GET / -> 200 or 301, never 500',
+    async () => {
+      const res = await getJson('/');
+      const ok = res.status === 200 || res.status === 301;
+      record('I2', ok, `status=${res.status}`);
+      expect([200, 301]).toContain(res.status);
+    },
+    30_000,
+  );
+
+  it(
+    'I3 POST /payments/create no body -> 400 or 422, never 500',
+    async () => {
+      const res = await postRaw('/payments/create', '');
+      const ok = res.status === 400 || res.status === 422;
+      record('I3', ok, `status=${res.status} body=${res.text}`);
+      expect([400, 422]).toContain(res.status);
+    },
+    30_000,
+  );
+
+  it(
+    'I4 GET /admin/earnings with correct SHIELD creds -> 200',
+    async () => {
+      const res = await getJson('/admin/earnings', {
+        Authorization: basicAuthHeader(SHIELD_USER!, SHIELD_PASSWORD!),
+      });
+      const ok = res.status === 200 && Array.isArray(res.json?.sites);
+      record('I4', ok, `status=${res.status} body=${res.text.slice(0, 300)}`);
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.json.sites)).toBe(true);
+    },
+    30_000,
+  );
+
+  it(
+    'I5 POST /admin/expire-session with correct SHIELD creds + valid sessionId -> 200 (bench utility works)',
+    async () => {
+      await resetTestConnector();
+      const checkoutRes = await postJson('/checkout', validCheckoutBody(), isolatedIp('I5'));
+      expect(checkoutRes.status).toBe(201);
+      const res = await postJson(
+        '/admin/expire-session',
+        { sessionId: checkoutRes.json.sessionId },
+        { Authorization: basicAuthHeader(SHIELD_USER!, SHIELD_PASSWORD!) },
+      );
+      const ok = res.status === 200 && res.json?.status === 'expired';
+      record('I5', ok, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(200);
+      expect(res.json.status).toBe('expired');
+    },
+    30_000,
+  );
+
+  it(
+    'I6 GET /host/earnings with HOST_AUTH_USER/PASSWORD from .env -> 200',
+    async () => {
+      const HOST_AUTH_USER = process.env['HOST_AUTH_USER'];
+      const HOST_AUTH_PASSWORD = process.env['HOST_AUTH_PASSWORD'];
+      if (!HOST_AUTH_USER || !HOST_AUTH_PASSWORD) {
+        record('I6', false, 'GAP: HOST_AUTH_USER/PASSWORD not set in local .env — cannot construct request');
+        throw new Error('HOST_AUTH_USER/PASSWORD must be set in .env to run I6');
+      }
+      const res = await getJson('/host/earnings', {
+        Authorization: basicAuthHeader(HOST_AUTH_USER, HOST_AUTH_PASSWORD),
+      });
+      const ok = res.status === 200;
+      record(
+        'I6',
+        ok,
+        ok
+          ? `status=${res.status} body=${res.text.slice(0, 200)}`
+          : `BUG: status=${res.status} — HOST_AUTH env vars missing from Render — ` +
+              `host-earnings.html is broken in production. body=${res.text}`,
+      );
+      expect(res.status).toBe(200);
     },
     30_000,
   );
