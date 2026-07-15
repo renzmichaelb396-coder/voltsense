@@ -127,6 +127,7 @@ export async function createCheckoutSession(
     success_url: req.successUrl,
     cancel_url: req.cancelUrl,
     description: req.description,
+    statement_descriptor: 'VoltSense EV',
   };
 
   if (req.referenceNumber !== undefined) {
