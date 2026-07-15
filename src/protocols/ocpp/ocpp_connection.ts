@@ -95,6 +95,41 @@ function isStopTransactionPayload(value: unknown): value is StopTransactionPaylo
   );
 }
 
+// ─── StatusNotification payload guard ─────────────────────────────────────────
+// Needed to persist live connector status (Available/Charging/Faulted/etc.) —
+// StatusNotification is not part of the OcppAction union payload shapes.
+// Values must match schema.connectorStatusEnum exactly, since status is
+// written straight to connectors.status.
+
+const CONNECTOR_STATUS_VALUES = [
+  'Available',
+  'Preparing',
+  'Charging',
+  'SuspendedEV',
+  'SuspendedEVSE',
+  'Finishing',
+  'Reserved',
+  'Unavailable',
+  'Faulted',
+] as const;
+
+type ConnectorStatusValue = (typeof CONNECTOR_STATUS_VALUES)[number];
+
+type StatusNotificationPayload = {
+  connectorId: number;
+  status: ConnectorStatusValue;
+};
+
+function isStatusNotificationPayload(value: unknown): value is StatusNotificationPayload {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v['connectorId'] === 'number' &&
+    typeof v['status'] === 'string' &&
+    (CONNECTOR_STATUS_VALUES as readonly string[]).includes(v['status'])
+  );
+}
+
 // ─── MeterValues payload guard ─────────────────────────────────────────────────
 // Needed to read the Energy.Active.Import.Register sampledValue for kWh cutoff
 // enforcement — MeterValues is not part of the OcppAction union payload shapes.
@@ -450,6 +485,7 @@ export class OcppConnection {
       case 'Heartbeat':
         return this.handleHeartbeat(msg);
       case 'StatusNotification':
+        this.trackStatusNotification(msg.payload);
         return buildCallResultFrame(msg.messageId, {});
       case 'Authorize':
         return buildCallResultFrame(msg.messageId, { status: 'Accepted' });
@@ -827,6 +863,37 @@ export class OcppConnection {
       .where(eq(schema.sessions.id, session.id));
 
     this.activeTransactions.set(transactionId, { sessionId: session.id, lastMeterWh: payload.meterStart });
+  }
+
+  // ─── StatusNotification connector status sync (fire-and-forget) ───────────
+  // No db injected (e.g. the simulation harness) → nothing to persist.
+
+  private trackStatusNotification(payload: unknown): void {
+    if (this.db === undefined || !isStatusNotificationPayload(payload)) {
+      return;
+    }
+    const db = this.db;
+    void this.updateConnectorStatus(db, payload).catch((err: unknown) => {
+      console.error(
+        `[voltsense:ocpp] failed to update connector status: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  }
+
+  private async updateConnectorStatus(db: SettlementDb, payload: StatusNotificationPayload): Promise<void> {
+    await db
+      .update(schema.connectors)
+      .set({ status: payload.status, updatedAt: new Date() })
+      .where(
+        and(
+          eq(schema.connectors.chargePointId, this.chargePointId),
+          eq(schema.connectors.connectorId, payload.connectorId),
+        ),
+      );
+
+    console.log(
+      `[voltsense:ocpp] StatusNotification connectorId=${payload.connectorId} status=${payload.status} chargePointId=${this.chargePointId}`,
+    );
   }
 
   // ─── StopTransaction settlement (fire-and-forget) ──────────────────────────

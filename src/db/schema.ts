@@ -173,6 +173,10 @@ export const sessions = pgTable('sessions', {
   idTag: text('id_tag').notNull(),
   packageId: packageIdEnum('package_id').notNull(),
 
+  // Guest-supplied contact for future overstay/charging-update SMS (Phase 2+).
+  // Optional — checkout must never block on this field being absent.
+  phoneNumber: text('phone_number'),
+
   // Tariff snapshot — copied from tariffs at session create; never re-read post-start
   snapshotDuRatePerKwh: numeric('snapshot_du_rate_per_kwh', { precision: 18, scale: 6 }).notNull(),
   snapshotHostMarginPerKwh: numeric('snapshot_host_margin_per_kwh', { precision: 18, scale: 6 }).notNull(),

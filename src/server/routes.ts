@@ -452,6 +452,7 @@ const CheckoutRequestSchema = z.object({
   connectorId: z.number().int().positive(),
   packageId: z.enum(PACKAGE_IDS),
   idTag: z.string().min(1),
+  phone_number: z.string().optional(),
 });
 
 // Thrown inside the checkout transaction when PayMongo link creation fails,
@@ -473,7 +474,7 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
   if (!bodyParsed.success) {
     return jsonResponse(400, { error: 'invalid_checkout_payload' });
   }
-  const { chargePointId, connectorId, packageId, idTag } = bodyParsed.data;
+  const { chargePointId, connectorId, packageId, idTag, phone_number } = bodyParsed.data;
 
   const chargePointRows = await ctx.db
     .select({ siteId: schema.chargePoints.siteId, status: schema.chargePoints.status })
@@ -591,6 +592,7 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
           status: 'awaiting_payment',
           idTag,
           packageId,
+          phoneNumber: phone_number,
           snapshotDuRatePerKwh: tariff.duRatePerKwh,
           snapshotHostMarginPerKwh: tariff.hostMarginPerKwh,
           snapshotPlatformFeePerKwh: tariff.platformFeePerKwh,
