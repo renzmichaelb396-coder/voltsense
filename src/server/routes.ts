@@ -468,7 +468,7 @@ const CheckoutRequestSchema = z
     packageId: z.enum(PACKAGE_IDS),
     idTag: z.string().min(1),
     phone_number: z.string().optional(),
-    customKwh: z.number().positive().min(1).max(100).optional(),
+    customKwh: z.number().positive().min(1).max(120).optional(),
   })
   .superRefine((data, ctx) => {
     if (data.packageId === 'PKG_CUSTOM' && data.customKwh === undefined) {
