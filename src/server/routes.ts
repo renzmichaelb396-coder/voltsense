@@ -421,10 +421,13 @@ async function handleCreatePayment(ctx: RequestContext): Promise<HttpResponse> {
   });
 }
 
-const PACKAGE_IDS = ['PKG_5KWH', 'PKG_10KWH', 'PKG_15KWH', 'PKG_FULL'] as const;
+const PACKAGE_IDS = ['PKG_5KWH', 'PKG_10KWH', 'PKG_15KWH', 'PKG_FULL', 'PKG_CUSTOM'] as const;
 type PackageId = (typeof PACKAGE_IDS)[number];
 
-const PACKAGE_MAX_KWH: Readonly<Record<PackageId, string | null>> = {
+// PKG_CUSTOM is priced dynamically per call via computeCustomPrice, not looked up here.
+type LookupPackageId = Exclude<PackageId, 'PKG_CUSTOM'>;
+
+const PACKAGE_MAX_KWH: Readonly<Record<LookupPackageId, string | null>> = {
   PKG_5KWH: '5',
   PKG_10KWH: '10',
   PKG_15KWH: '15',
@@ -434,7 +437,7 @@ const PACKAGE_MAX_KWH: Readonly<Record<PackageId, string | null>> = {
 // Full Session is a flat price, not a per-kWh formula — it has no kWh cap.
 const FULL_SESSION_FLAT_PHP = '500.00';
 
-function computePackagePrices(tariff: typeof schema.tariffs.$inferSelect): Record<PackageId, string> {
+function computePackagePrices(tariff: typeof schema.tariffs.$inferSelect): Record<LookupPackageId, string> {
   const tariffTotal = new Decimal(tariff.duRatePerKwh)
     .plus(tariff.hostMarginPerKwh)
     .plus(tariff.platformFeePerKwh);
@@ -447,15 +450,31 @@ function computePackagePrices(tariff: typeof schema.tariffs.$inferSelect): Recor
   };
 }
 
+function computeCustomPrice(tariff: typeof schema.tariffs.$inferSelect, customKwh: number): string {
+  return new Decimal(tariff.duRatePerKwh)
+    .plus(tariff.hostMarginPerKwh)
+    .plus(tariff.platformFeePerKwh)
+    .times(customKwh)
+    .plus(tariff.platformFeeFlatPhp)
+    .toFixed(2);
+}
+
 const CHECKOUT_AUTH_WINDOW_MS = 15 * 60 * 1000;
 
-const CheckoutRequestSchema = z.object({
-  chargePointId: z.string().uuid(),
-  connectorId: z.number().int().positive(),
-  packageId: z.enum(PACKAGE_IDS),
-  idTag: z.string().min(1),
-  phone_number: z.string().optional(),
-});
+const CheckoutRequestSchema = z
+  .object({
+    chargePointId: z.string().uuid(),
+    connectorId: z.number().int().positive(),
+    packageId: z.enum(PACKAGE_IDS),
+    idTag: z.string().min(1),
+    phone_number: z.string().optional(),
+    customKwh: z.number().positive().min(1).max(100).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.packageId === 'PKG_CUSTOM' && data.customKwh === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'customKwh required for PKG_CUSTOM' });
+    }
+  });
 
 // Thrown inside the checkout transaction when PayMongo link creation fails,
 // so the session/payment inserts roll back instead of leaving an orphaned
@@ -498,7 +517,7 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
   if (!bodyParsed.success) {
     return jsonResponse(400, { error: 'invalid_checkout_payload' });
   }
-  const { chargePointId, connectorId, packageId, idTag, phone_number } = bodyParsed.data;
+  const { chargePointId, connectorId, packageId, idTag, phone_number, customKwh } = bodyParsed.data;
 
   const chargePointRows = await ctx.db
     .select({ siteId: schema.chargePoints.siteId, status: schema.chargePoints.status })
@@ -603,7 +622,18 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
     return jsonResponse(500, { error: 'paymongo_not_configured' });
   }
 
-  const computedAmountPhp = computePackagePrices(tariff)[packageId];
+  let computedAmountPhp: string;
+  let maxKwh: string | null;
+  if (packageId === 'PKG_CUSTOM') {
+    if (customKwh === undefined) {
+      return jsonResponse(400, { error: 'custom_kwh_required' });
+    }
+    computedAmountPhp = computeCustomPrice(tariff, customKwh);
+    maxKwh = customKwh.toString();
+  } else {
+    computedAmountPhp = computePackagePrices(tariff)[packageId];
+    maxKwh = PACKAGE_MAX_KWH[packageId];
+  }
 
   let checkoutResult: { sessionId: string; checkoutUrl: string };
   try {
@@ -622,7 +652,7 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
           snapshotPlatformFeePerKwh: tariff.platformFeePerKwh,
           snapshotPlatformFeeFlatPhp: tariff.platformFeeFlatPhp,
           snapshotPspFeeRate: tariff.pspFeeRate,
-          maxKwh: PACKAGE_MAX_KWH[packageId],
+          maxKwh,
           holdAmountPhp: computedAmountPhp,
           authExpiresAt: new Date(Date.now() + CHECKOUT_AUTH_WINDOW_MS),
         })

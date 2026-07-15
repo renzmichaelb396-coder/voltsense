@@ -51,6 +51,7 @@ export const packageIdEnum = pgEnum('package_id', [
   'PKG_10KWH',
   'PKG_15KWH',
   'PKG_FULL',
+  'PKG_CUSTOM',
 ]);
 
 export const pspEnum = pgEnum('psp', ['gcash', 'maya', 'paymongo']);
