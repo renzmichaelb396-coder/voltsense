@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VoltSense — Charge Now</title><meta name="description" content="Scan-to-charge payment page for VoltSense EV charging stations."><style>*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}:root{--bg:#0a0e1a;--card:#111827;--card-border:#1f2d3d;--accent-start:#16d39a;--accent-end:#0ea5e9;--text:#f1f5f9;--text-muted:#94a3b8;--danger:#f87171;--radius:12px}body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;min-height:100vh;display:flex;flex-direction:column;padding:1.5rem 1rem 3rem}header{text-align:center;margin-bottom:2rem}.logo{font-size:1.5rem;font-weight:700;background:linear-gradient(90deg,var(--accent-start),var(--accent-end));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}header p{color:var(--text-muted);font-size:.85rem;margin-top:.5rem}main{flex:1;max-width:420px;width:100%;margin:0 auto}.section-title{text-align:center;font-size:1.1rem;font-weight:700;margin-bottom:1.25rem}.packages{display:flex;flex-direction:column;gap:.85rem}.package{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);padding:1.25rem 1.5rem;display:flex;align-items:center;justify-content:space-between;cursor:pointer;transition:border-color .15s,box-shadow .15s,transform .1s;text-align:left;width:100%;color:inherit;font:inherit}.package:hover{border-color:var(--accent-start);box-shadow:0 0 20px rgba(22,211,154,.12)}.package:active{transform:scale(.97);border-color:var(--accent-start);box-shadow:0 0 0 2px rgba(22,211,154,.35)}.package:disabled{opacity:.5;cursor:not-allowed;transform:none}.package .name{font-weight:600;font-size:1rem;margin-bottom:.25rem}.package .desc{color:var(--text-muted);font-size:.8rem}.package .price{font-size:1.4rem;font-weight:800;background:linear-gradient(90deg,var(--accent-start),var(--accent-end));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;white-space:nowrap}.package.full{border:2px solid var(--accent-start);box-shadow:0 0 12px rgba(22,211,154,.3);flex-direction:column;align-items:stretch;gap:.65rem}.best-value-ribbon{background:var(--accent-start);color:var(--bg);font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.06em;text-align:center;border-radius:6px;padding:.35rem .5rem}.full-content-row{display:flex;align-items:center;justify-content:space-between;width:100%}.charger-info{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);padding:1rem 1.25rem;margin-bottom:1.5rem;font-size:.8rem;color:var(--text-muted);display:flex;justify-content:space-between}.charger-info span:last-child{color:var(--text)}.state-overlay{display:none;position:fixed;inset:0;background:rgba(10,14,26,.92);backdrop-filter:blur(6px);z-index:100;place-items:center;text-align:center;padding:2rem}.state-overlay.active{display:grid}.spinner{width:44px;height:44px;border:4px solid var(--card-border);border-top-color:var(--accent-start);border-radius:50%;margin:0 auto 1.25rem;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.state-overlay h2{font-size:1.1rem;font-weight:700;margin-bottom:.5rem}.state-overlay p{color:var(--text-muted);font-size:.9rem;max-width:320px}.state-overlay.error h2{color:var(--danger)}.retry-btn{margin-top:1.5rem;background:linear-gradient(135deg,var(--accent-start),var(--accent-end));color:#fff;border:none;padding:.75rem 1.75rem;border-radius:8px;font-size:.9rem;font-weight:600;cursor:pointer}.error-banner{display:none;background:rgba(248,113,113,.1);border:1px solid var(--danger);color:var(--danger);border-radius:var(--radius);padding:1rem 1.25rem;margin-bottom:1.25rem;font-size:.85rem;text-align:center}.error-banner.active{display:block}.phone-field{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);padding:1rem 1.25rem;margin-bottom:1.5rem}.phone-field label{display:block;font-size:.8rem;color:var(--text-muted);margin-bottom:.5rem}.phone-field input{width:100%;background:var(--bg);border:1px solid var(--card-border);border-radius:8px;padding:.65rem .75rem;color:var(--text);font:inherit;font-size:16px!important}.phone-field input:focus{outline:none;border-color:var(--accent-start)}.battery-calc{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);padding:1rem 1.25rem;margin-bottom:1.5rem;display:flex;flex-direction:column;gap:.85rem}.battery-field label{display:block;font-size:.8rem;color:var(--text-muted);margin-bottom:.5rem}.battery-field .optional-tag{font-weight:400;opacity:.75}.battery-field select,.battery-field input{width:100%;background:var(--bg);border:1px solid var(--card-border);border-radius:8px;padding:.65rem .75rem;color:var(--text);font:inherit;font-size:16px!important;-webkit-appearance:none;-moz-appearance:none;appearance:none}.battery-field select:focus,.battery-field input:focus{outline:none;border-color:var(--accent-start)}.battery-hint{color:var(--text-muted);font-size:1rem;font-weight:700;margin-top:.3rem}.battery-hint.hint-teal{color:var(--accent-start)}.battery-hint[hidden]{display:none}.battery-field-row{display:flex;gap:.75rem}.battery-field-row .battery-field{flex:1}.battery-warning{color:var(--danger);font-size:.75rem;margin-top:-.35rem}.battery-warning[hidden]{display:none}footer{text-align:center;color:var(--text-muted);font-size:.75rem;margin-top:2rem}.package.custom{cursor:default;flex-direction:column;align-items:stretch;gap:.75rem}.package.custom:active{transform:none}.custom-top{display:flex;align-items:center;justify-content:space-between;cursor:pointer;width:100%}.custom-expand{display:flex;flex-direction:column;gap:.75rem;padding-top:.5rem;border-top:1px solid var(--card-border)}.custom-expand[hidden]{display:none}.custom-expand label{display:block;font-size:.8rem;color:var(--text-muted)}.custom-expand input{width:100%;background:var(--bg);border:1px solid var(--card-border);border-radius:8px;padding:.65rem .75rem;color:var(--text);font:inherit;font-size:16px!important}.custom-expand input:focus{outline:none;border-color:var(--accent-start)}.custom-pay-btn{background:linear-gradient(135deg,var(--accent-start),var(--accent-end));color:#fff;border:none;padding:.75rem 1.25rem;border-radius:8px;font-size:.9rem;font-weight:600;cursor:pointer;width:100%}.custom-pay-btn:disabled{opacity:.5;cursor:not-allowed}.package.full.suggest-better{border-color:#f59e0b;box-shadow:0 0 24px rgba(245,158,11,.45)}.pricing-warn-banner{display:none;background:rgba(245,158,11,.18);border:2px solid #f59e0b;color:#f59e0b;border-radius:var(--radius);padding:.85rem 1rem;font-size:.88rem;font-weight:700;line-height:1.4;text-align:center}.pricing-warn-banner.active{display:block}</style></head><body>
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VoltSense — Charge Now</title><meta name="description" content="Scan-to-charge payment page for VoltSense EV charging stations."><style>*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}:root{--bg:#0a0e1a;--card:#111827;--card-border:#1f2d3d;--accent-start:#16d39a;--accent-end:#0ea5e9;--text:#f1f5f9;--text-muted:#94a3b8;--danger:#f87171;--radius:12px}body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;min-height:100vh;display:flex;flex-direction:column;padding:1.5rem 1rem 3rem}header{text-align:center;margin-bottom:2rem}.logo{font-size:1.5rem;font-weight:700;background:linear-gradient(90deg,var(--accent-start),var(--accent-end));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}header p{color:var(--text-muted);font-size:.85rem;margin-top:.5rem}main{flex:1;max-width:420px;width:100%;margin:0 auto}.section-title{text-align:center;font-size:1.1rem;font-weight:700;margin-bottom:1.25rem}.packages{display:flex;flex-direction:column;gap:.85rem}.package{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);padding:1.25rem 1.5rem;display:flex;align-items:center;justify-content:space-between;cursor:pointer;transition:border-color .15s,box-shadow .15s,transform .1s;text-align:left;width:100%;color:inherit;font:inherit}.package:hover{border-color:var(--accent-start);box-shadow:0 0 20px rgba(22,211,154,.12)}.package:active{transform:scale(.97);border-color:var(--accent-start);box-shadow:0 0 0 2px rgba(22,211,154,.35)}.package:disabled{opacity:.5;cursor:not-allowed;transform:none}.package .name{font-weight:600;font-size:1rem;margin-bottom:.25rem}.package .desc{color:var(--text-muted);font-size:.8rem}.package .price{font-size:1.4rem;font-weight:800;background:linear-gradient(90deg,var(--accent-start),var(--accent-end));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;white-space:nowrap}.package.smart-fill{border:2px solid var(--accent-start);box-shadow:0 0 12px rgba(22,211,154,.3)}.charger-info{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);padding:1rem 1.25rem;margin-bottom:1.5rem;font-size:.8rem;color:var(--text-muted);display:flex;justify-content:space-between}.charger-info span:last-child{color:var(--text)}.state-overlay{display:none;position:fixed;inset:0;background:rgba(10,14,26,.92);backdrop-filter:blur(6px);z-index:100;place-items:center;text-align:center;padding:2rem}.state-overlay.active{display:grid}.spinner{width:44px;height:44px;border:4px solid var(--card-border);border-top-color:var(--accent-start);border-radius:50%;margin:0 auto 1.25rem;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.state-overlay h2{font-size:1.1rem;font-weight:700;margin-bottom:.5rem}.state-overlay p{color:var(--text-muted);font-size:.9rem;max-width:320px}.state-overlay.error h2{color:var(--danger)}.retry-btn{margin-top:1.5rem;background:linear-gradient(135deg,var(--accent-start),var(--accent-end));color:#fff;border:none;padding:.75rem 1.75rem;border-radius:8px;font-size:.9rem;font-weight:600;cursor:pointer}.error-banner{display:none;background:rgba(248,113,113,.1);border:1px solid var(--danger);color:var(--danger);border-radius:var(--radius);padding:1rem 1.25rem;margin-bottom:1.25rem;font-size:.85rem;text-align:center}.error-banner.active{display:block}.phone-field{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);padding:1rem 1.25rem;margin-bottom:1.5rem}.phone-field label{display:block;font-size:.8rem;color:var(--text-muted);margin-bottom:.5rem}.phone-field input{width:100%;background:var(--bg);border:1px solid var(--card-border);border-radius:8px;padding:.65rem .75rem;color:var(--text);font:inherit;font-size:16px!important}.phone-field input:focus{outline:none;border-color:var(--accent-start)}.battery-calc{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);padding:1rem 1.25rem;margin-bottom:1.5rem;display:flex;flex-direction:column;gap:.85rem}.battery-field label{display:block;font-size:.8rem;color:var(--text-muted);margin-bottom:.5rem}.battery-field .optional-tag{font-weight:400;opacity:.75}.battery-field select,.battery-field input{width:100%;background:var(--bg);border:1px solid var(--card-border);border-radius:8px;padding:.65rem .75rem;color:var(--text);font:inherit;font-size:16px!important;-webkit-appearance:none;-moz-appearance:none;appearance:none}.battery-field select:focus,.battery-field input:focus{outline:none;border-color:var(--accent-start)}.battery-hint{color:var(--text-muted);font-size:1rem;font-weight:700;margin-top:.3rem}.battery-hint.hint-teal{color:var(--accent-start)}.battery-hint[hidden]{display:none}.battery-field-row{display:flex;gap:.75rem}.battery-field-row .battery-field{flex:1}.battery-warning{color:var(--danger);font-size:.75rem;margin-top:-.35rem}.battery-warning[hidden]{display:none}footer{text-align:center;color:var(--text-muted);font-size:.75rem;margin-top:2rem}.package.custom{cursor:default;flex-direction:column;align-items:stretch;gap:.75rem}.package.custom:active{transform:none}.custom-top{display:flex;align-items:center;justify-content:space-between;cursor:pointer;width:100%}.custom-expand{display:flex;flex-direction:column;gap:.75rem;padding-top:.5rem;border-top:1px solid var(--card-border)}.custom-expand[hidden]{display:none}.custom-expand label{display:block;font-size:.8rem;color:var(--text-muted)}.custom-expand input{width:100%;background:var(--bg);border:1px solid var(--card-border);border-radius:8px;padding:.65rem .75rem;color:var(--text);font:inherit;font-size:16px!important}.custom-expand input:focus{outline:none;border-color:var(--accent-start)}.custom-pay-btn{background:linear-gradient(135deg,var(--accent-start),var(--accent-end));color:#fff;border:none;padding:.75rem 1.25rem;border-radius:8px;font-size:.9rem;font-weight:600;cursor:pointer;width:100%}.custom-pay-btn:disabled{opacity:.5;cursor:not-allowed}</style></head><body>
 <header><span class="logo">⚡ VoltSense</span><p>Choose a package → pay → plug in</p></header>
 <main>
 <div class="charger-info"><span>Connector</span><span id="connectorLabel">—</span></div>
@@ -33,8 +33,8 @@
 <button class="package" data-package="PKG_5KWH" data-price="145.00"><div><div class="name">5 kWh</div><div class="desc">~25 km range · quick top-up</div><div class="battery-hint" hidden></div></div><div class="price">₱145</div></button>
 <button class="package" data-package="PKG_10KWH" data-price="290.00"><div><div class="name">10 kWh</div><div class="desc">~50 km range · standard charge</div><div class="battery-hint" hidden></div></div><div class="price">₱290</div></button>
 <button class="package" data-package="PKG_15KWH" data-price="435.00"><div><div class="name">15 kWh</div><div class="desc">~75 km range · extended charge</div><div class="battery-hint" hidden></div></div><div class="price">₱435</div></button>
-<button class="package full" data-package="PKG_FULL" data-price="500.00"><div class="best-value-ribbon">⭐ BEST VALUE — Most popular</div><div class="full-content-row"><div><div class="name">Full Session</div><div class="desc">No kWh cap · charge until full</div><div class="battery-hint" hidden></div></div><div class="price">₱500</div></div></button>
-<div class="package custom" id="customCard"><div class="custom-top" id="customTop"><div><div class="name">Custom Amount</div><div class="desc">Enter exactly how many kWh you need</div></div><div class="price" id="customPricePreview">₱0</div></div><div class="custom-expand" id="customExpand" hidden><label for="customKwhInput">kWh needed</label><input type="number" id="customKwhInput" min="1" max="120" step="0.5" placeholder="e.g. 24" inputmode="decimal"><div class="pricing-warn-banner" id="fullSessionHint" role="alert">Full Session (₱500) is cheaper than this custom amount. Switch to Full Session instead.</div><button class="custom-pay-btn" id="customPayBtn" disabled>Charge Now — <span id="customPayPrice">₱0</span></button></div></div>
+<button class="package smart-fill" id="smartFillCard" hidden><div><div class="name">Smart Fill</div><div class="desc" id="smartFillDesc"></div><div class="battery-hint hint-teal" id="smartFillHint" hidden></div></div><div class="price" id="smartFillPrice">₱0</div></button>
+<div class="package custom" id="customCard"><div class="custom-top" id="customTop"><div><div class="name">Custom Amount</div><div class="desc">Enter exactly how many kWh you need</div></div><div class="price" id="customPricePreview">₱0</div></div><div class="custom-expand" id="customExpand" hidden><label for="customKwhInput">kWh needed</label><input type="number" id="customKwhInput" min="1" max="120" step="0.5" placeholder="e.g. 24" inputmode="decimal"><button class="custom-pay-btn" id="customPayBtn" disabled>Charge Now — <span id="customPayPrice">₱0</span></button></div></div>
 </div>
 </main>
 <footer>Powered by PayMongo</footer>
@@ -85,8 +85,6 @@ function setPackagesDisabled(disabled) {
 
 const PACKAGE_KWH = { PKG_5KWH: 5, PKG_10KWH: 10, PKG_15KWH: 15 };
 const CUSTOM_PREVIEW_RATE_PHP_PER_KWH = 29;
-const FULL_SESSION_PRICE_PHP = 500;
-const FULL_SESSION_BREAKEVEN_KWH = FULL_SESSION_PRICE_PHP / CUSTOM_PREVIEW_RATE_PHP_PER_KWH;
 
 function getSelectedBatteryKwh() {
   const select = document.getElementById('carSelect');
@@ -117,9 +115,6 @@ function getTargetBatteryPct() {
 }
 
 function computeBatteryHint(packageId, batteryKwh, currentPct) {
-  if (packageId === 'PKG_FULL') {
-    return { text: 'Charges until your car is full — no kWh cap', tone: 'muted' };
-  }
   const packageKwh = PACKAGE_KWH[packageId];
   if (!packageKwh) {
     return null;
@@ -173,6 +168,44 @@ function updateBatteryHints() {
     }
   });
   autofillCustomKwh();
+  updateSmartFillCard();
+}
+
+function updateSmartFillCard() {
+  const card = document.getElementById('smartFillCard');
+  const select = document.getElementById('carSelect');
+  const option = select.options[select.selectedIndex];
+  const carCapacityKwh = getSelectedBatteryKwh();
+  const currentPct = getCurrentBatteryPct();
+
+  if (carCapacityKwh === null || currentPct === null) {
+    card.hidden = true;
+    return;
+  }
+
+  const rawTarget = getTargetBatteryPct();
+  if (rawTarget !== null && rawTarget > 100) {
+    card.hidden = true;
+    return;
+  }
+  const targetPct = rawTarget ?? 100;
+  if (targetPct <= currentPct) {
+    card.hidden = true;
+    return;
+  }
+
+  const kWhNeeded = Math.min(120, Math.ceil(((targetPct - currentPct) / 100) * carCapacityKwh));
+  const price = kWhNeeded * CUSTOM_PREVIEW_RATE_PHP_PER_KWH;
+  const carName = option.textContent.split(' — ')[0];
+
+  card.dataset.smartFillKwh = String(kWhNeeded);
+  document.getElementById('smartFillDesc').textContent =
+    'Charges exactly what your ' + carName + ' needs · ' + kWhNeeded + ' kWh';
+  const hintEl = document.getElementById('smartFillHint');
+  hintEl.innerHTML = 'Battery reaches <strong>' + targetPct + '%</strong>';
+  hintEl.hidden = false;
+  document.getElementById('smartFillPrice').textContent = '₱' + price;
+  card.hidden = false;
 }
 
 function updateCustomPricePreview() {
@@ -183,13 +216,6 @@ function updateCustomPricePreview() {
   document.getElementById('customPricePreview').textContent = '₱' + price;
   document.getElementById('customPayPrice').textContent = '₱' + price;
   document.getElementById('customPayBtn').disabled = !valid;
-  const overFullSession = valid && (kwh * CUSTOM_PREVIEW_RATE_PHP_PER_KWH) > FULL_SESSION_PRICE_PHP;
-  const hint = document.getElementById('fullSessionHint');
-  hint.classList.toggle('active', overFullSession);
-  const fullCard = document.querySelector('.package.full');
-  if (fullCard) {
-    fullCard.classList.toggle('suggest-better', overFullSession);
-  }
 }
 
 // Auto-fills the custom kWh input from the battery calculator's current/target %.
@@ -309,11 +335,20 @@ function init() {
     return;
   }
 
-  document.querySelectorAll('.package:not(.custom)').forEach((btn) => {
+  document.querySelectorAll('.package:not(.custom):not(.smart-fill)').forEach((btn) => {
     btn.addEventListener('click', () => {
       const phoneNumber = document.getElementById('phoneNumber').value.trim();
       startCheckout(cpid, cid, btn.getAttribute('data-package'), phoneNumber);
     });
+  });
+
+  document.getElementById('smartFillCard').addEventListener('click', () => {
+    const kwh = Number(document.getElementById('smartFillCard').dataset.smartFillKwh);
+    if (!Number.isFinite(kwh) || kwh < 1) {
+      return;
+    }
+    const phoneNumber = document.getElementById('phoneNumber').value.trim();
+    startCheckout(cpid, cid, 'PKG_CUSTOM', phoneNumber, kwh);
   });
 
   document.getElementById('carSelect').addEventListener('change', updateBatteryHints);

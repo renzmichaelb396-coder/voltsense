@@ -421,7 +421,7 @@ async function handleCreatePayment(ctx: RequestContext): Promise<HttpResponse> {
   });
 }
 
-const PACKAGE_IDS = ['PKG_5KWH', 'PKG_10KWH', 'PKG_15KWH', 'PKG_FULL', 'PKG_CUSTOM'] as const;
+const PACKAGE_IDS = ['PKG_5KWH', 'PKG_10KWH', 'PKG_15KWH', 'PKG_CUSTOM'] as const;
 type PackageId = (typeof PACKAGE_IDS)[number];
 
 // PKG_CUSTOM is priced dynamically per call via computeCustomPrice, not looked up here.
@@ -431,11 +431,7 @@ const PACKAGE_MAX_KWH: Readonly<Record<LookupPackageId, string | null>> = {
   PKG_5KWH: '5',
   PKG_10KWH: '10',
   PKG_15KWH: '15',
-  PKG_FULL: null,
 };
-
-// Full Session is a flat price, not a per-kWh formula — it has no kWh cap.
-const FULL_SESSION_FLAT_PHP = '500.00';
 
 function computePackagePrices(tariff: typeof schema.tariffs.$inferSelect): Record<LookupPackageId, string> {
   const tariffTotal = new Decimal(tariff.duRatePerKwh)
@@ -446,7 +442,6 @@ function computePackagePrices(tariff: typeof schema.tariffs.$inferSelect): Recor
     PKG_5KWH: tariffTotal.times('5').plus(tariff.platformFeeFlatPhp).toFixed(2),
     PKG_10KWH: tariffTotal.times('10').plus(tariff.platformFeeFlatPhp).toFixed(2),
     PKG_15KWH: tariffTotal.times('15').plus(tariff.platformFeeFlatPhp).toFixed(2),
-    PKG_FULL: FULL_SESSION_FLAT_PHP,
   };
 }
 
@@ -756,7 +751,7 @@ async function handleSessionStatus(ctx: RequestContext): Promise<HttpResponse> {
     kwhDelivered = Math.max(0, (lastMeterWh - meterStartWh) / 1000);
 
     // Estimate from the average delivery rate so far — no remaining estimate
-    // for PKG_FULL (no kWh cap) or before any energy has actually been delivered.
+    // before any energy has actually been delivered.
     if (session.maxKwh !== null && session.startedAt !== null && kwhDelivered > 0) {
       const elapsedMin = (Date.now() - session.startedAt.getTime()) / 60_000;
       const ratePerMin = kwhDelivered / elapsedMin;

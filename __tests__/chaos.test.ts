@@ -35,7 +35,7 @@ const CP_ID = '33333333-3333-3333-3333-333333333333';
 const CONNECTOR_ID = 1;
 const FAKE_ID = '00000000-0000-0000-0000-000000000000';
 
-const VALID_PACKAGES = ['PKG_5KWH', 'PKG_10KWH', 'PKG_15KWH', 'PKG_FULL'] as const;
+const VALID_PACKAGES = ['PKG_5KWH', 'PKG_10KWH', 'PKG_15KWH'] as const;
 
 const SHIELD_USER = process.env['VOLTSENSE_SHIELD_USER'];
 const SHIELD_PASSWORD = process.env['VOLTSENSE_SHIELD_PASSWORD'];
@@ -691,17 +691,15 @@ describe('Phase A: PKG_CUSTOM edge cases', () => {
   );
 
   it(
-    'A5 PKG_FULL + customKwh=10 -> 201 (server ignores customKwh for non-CUSTOM pkg)',
+    'A5 PKG_FULL -> 400 (flat-fee unlimited-kWh package removed)',
     async () => {
-      await resetTestConnector();
       const res = await postJson(
         '/checkout',
         validCheckoutBody({ packageId: 'PKG_FULL', customKwh: 10 }),
         isolatedIp('A5'),
       );
-      const ok = checkoutCreatedInvariant(res);
-      record('A5', ok, `status=${res.status} body=${res.text}`);
-      expect(res.status).toBe(201);
+      record('A5', res.status === 400, `status=${res.status} body=${res.text}`);
+      expect(res.status).toBe(400);
     },
     30_000,
   );
