@@ -171,6 +171,31 @@ function updateBatteryHints() {
   updateSmartFillCard();
 }
 
+function hideSmartFillCard() {
+  const card = document.getElementById('smartFillCard');
+  const customCard = document.getElementById('customCard');
+  card.hidden = true;
+  customCard.parentNode.insertBefore(card, customCard);
+  const badge = card.querySelector('.smart-fill-badge');
+  if (badge) badge.remove();
+  customCard.hidden = false;
+}
+
+function showSmartFillCard() {
+  const card = document.getElementById('smartFillCard');
+  card.parentNode.prepend(card);
+  const nameEl = card.querySelector('.name');
+  if (!nameEl.querySelector('.smart-fill-badge')) {
+    const badge = document.createElement('span');
+    badge.className = 'smart-fill-badge';
+    badge.style.cssText = 'background:var(--accent-start);color:#0a0e1a;font-size:.65rem;font-weight:700;padding:.1rem .45rem;border-radius:4px;margin-left:.5rem;vertical-align:middle;';
+    badge.textContent = 'RECOMMENDED';
+    nameEl.appendChild(badge);
+  }
+  document.getElementById('customCard').hidden = true;
+  card.hidden = false;
+}
+
 function updateSmartFillCard() {
   const card = document.getElementById('smartFillCard');
   const select = document.getElementById('carSelect');
@@ -179,18 +204,18 @@ function updateSmartFillCard() {
   const currentPct = getCurrentBatteryPct();
 
   if (carCapacityKwh === null || currentPct === null) {
-    card.hidden = true;
+    hideSmartFillCard();
     return;
   }
 
   const rawTarget = getTargetBatteryPct();
   if (rawTarget !== null && rawTarget > 100) {
-    card.hidden = true;
+    hideSmartFillCard();
     return;
   }
   const targetPct = rawTarget ?? 100;
   if (targetPct <= currentPct) {
-    card.hidden = true;
+    hideSmartFillCard();
     return;
   }
 
@@ -205,7 +230,7 @@ function updateSmartFillCard() {
   hintEl.innerHTML = 'Battery reaches <strong>' + targetPct + '%</strong>';
   hintEl.hidden = false;
   document.getElementById('smartFillPrice').textContent = '₱' + price;
-  card.hidden = false;
+  showSmartFillCard();
 }
 
 function updateCustomPricePreview() {
