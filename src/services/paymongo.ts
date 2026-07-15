@@ -123,7 +123,7 @@ export async function createCheckoutSession(
         quantity: 1,
       },
     ],
-    payment_method_types: ['card', 'gcash', 'paymaya', 'grab_pay'],
+    payment_method_types: ['qrph', 'gcash', 'paymaya', 'card', 'grab_pay'],
     success_url: req.successUrl,
     cancel_url: req.cancelUrl,
     description: req.description,
