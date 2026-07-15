@@ -660,11 +660,11 @@ describe('Phase A: PKG_CUSTOM edge cases', () => {
   );
 
   it(
-    'A3 customKwh=101 + PKG_CUSTOM -> 400 (Zod max 100)',
+    'A3 customKwh=121 + PKG_CUSTOM -> 400 (Zod max 120)',
     async () => {
       const res = await postJson(
         '/checkout',
-        validCheckoutBody({ packageId: 'PKG_CUSTOM', customKwh: 101 }),
+        validCheckoutBody({ packageId: 'PKG_CUSTOM', customKwh: 121 }),
         isolatedIp('A3'),
       );
       record('A3', res.status === 400, `status=${res.status} body=${res.text}`);
