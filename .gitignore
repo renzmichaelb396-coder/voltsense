@@ -5,3 +5,4 @@ dist/
 .env.local
 .env.*.local
 docs/VoltSense-Documents.md
+CLAUDE.md
