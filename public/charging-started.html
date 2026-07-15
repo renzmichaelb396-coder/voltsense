@@ -6,7 +6,7 @@
 <div class="state active" id="loadingState">
 <div class="spinner"></div>
 <h2>Payment received — your charger is warming up.</h2>
-<p>Hang tight while we connect to the charger.</p>
+<p>Go plug in your car now — the charger is waiting for your vehicle.</p>
 </div>
 
 <div class="state" id="chargingState">
@@ -30,6 +30,18 @@
 <p>This charging session is no longer active. If you were charging and this looks wrong, contact the site host.</p>
 </div>
 
+<div class="state" id="refundedState">
+<div class="icon timeout">💳</div>
+<h2>Your payment was refunded.</h2>
+<p>No kWh was delivered — your full payment has been returned. Refunds appear within 3–5 business days.</p>
+</div>
+
+<div class="state" id="partialRefundState">
+<div class="icon success"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
+<h2>Partial refund issued.</h2>
+<p id="partialRefundDetail">You were charged only for the kWh actually delivered. The unused balance was refunded.</p>
+</div>
+
 <div class="state" id="errorState">
 <div class="icon error"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="8" x2="12" y2="13"></line><line x1="12" y1="16.5" x2="12" y2="16.51"></line><circle cx="12" cy="12" r="9"></circle></svg></div>
 <h2>Session ID missing.</h2>
@@ -50,7 +62,7 @@ function getParam(name) {
 }
 
 function showState(id) {
-  ['loadingState', 'chargingState', 'completedState', 'expiredState', 'errorState'].forEach((stateId) => {
+  ['loadingState', 'chargingState', 'completedState', 'expiredState', 'refundedState', 'partialRefundState', 'errorState'].forEach((stateId) => {
     document.getElementById(stateId).classList.toggle('active', stateId === id);
   });
 }
@@ -121,6 +133,18 @@ function pollStatus(sessionId) {
       document.getElementById('completedSummary').textContent =
         `${(Number(data.kwhDelivered) || 0).toFixed(2)} kWh delivered. Thanks for charging with VoltSense.`;
       startOverstayCountdown();
+      return;
+    }
+
+    if (status === 'refunded') {
+      showState('refundedState');
+      return;
+    }
+
+    if (status === 'partially_refunded') {
+      document.getElementById('partialRefundDetail').textContent =
+        `${(Number(data.kwhDelivered) || 0).toFixed(2)} kWh delivered. The unused portion was refunded to your original payment method.`;
+      showState('partialRefundState');
       return;
     }
 

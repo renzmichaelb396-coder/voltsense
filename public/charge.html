@@ -9,7 +9,7 @@
 <option value="" selected>— Select —</option>
 <option value="byd_atto3" data-kwh="60">BYD Atto 3 — 60 kWh</option>
 <option value="byd_dolphin_std" data-kwh="45">BYD Dolphin (Standard) — 45 kWh</option>
-<option value="byd_dolphin_ext" data-kwh="58">BYD Dolphin (Extended) — 58 kWh</option>
+<option value="byd_dolphin_ext" data-kwh="60">BYD Dolphin (Extended) — 60 kWh</option>
 <option value="byd_seal" data-kwh="82">BYD Seal — 82 kWh</option>
 <option value="byd_han" data-kwh="85">BYD Han — 85 kWh</option>
 <option value="hyundai_ioniq5" data-kwh="73">Hyundai Ioniq 5 — 73 kWh</option>
@@ -70,7 +70,7 @@ function setPackagesDisabled(disabled) {
   document.querySelectorAll('.package:not(.custom)').forEach((btn) => { btn.disabled = disabled; });
   const customPayBtn = document.getElementById('customPayBtn');
   const customKwh = Number(document.getElementById('customKwhInput').value);
-  customPayBtn.disabled = disabled || !(Number.isFinite(customKwh) && customKwh > 0);
+  customPayBtn.disabled = disabled || !(Number.isFinite(customKwh) && customKwh >= 1);
 }
 
 const PACKAGE_KWH = { PKG_5KWH: 5, PKG_10KWH: 10, PKG_15KWH: 15 };
@@ -115,7 +115,7 @@ function computeBatteryHint(packageId, batteryKwh, currentPct, targetPct) {
   const addedPct = (packageKwh / batteryKwh) * 100;
   const rawReachPct = currentPct + addedPct;
   if (rawReachPct > targetPct) {
-    return 'fills to ' + Math.round(targetPct) + '% (charger auto-stops)';
+    return '+' + Math.round(addedPct) + '% → reaches ~' + Math.round(rawReachPct) + '% (over your ' + Math.round(targetPct) + '% goal)';
   }
   return '+' + Math.round(addedPct) + '% → reaches ' + Math.round(rawReachPct) + '%';
 }
@@ -151,8 +151,9 @@ function updateBatteryHints() {
 
 function updateCustomPricePreview() {
   const kwh = Number(document.getElementById('customKwhInput').value);
-  const valid = Number.isFinite(kwh) && kwh > 0;
-  const price = valid ? Math.round(kwh * CUSTOM_PREVIEW_RATE_PHP_PER_KWH) : 0;
+  const valid = Number.isFinite(kwh) && kwh >= 1;
+  const raw = valid ? kwh * CUSTOM_PREVIEW_RATE_PHP_PER_KWH : 0;
+  const price = Number.isInteger(raw) ? raw : parseFloat(raw.toFixed(2));
   document.getElementById('customPricePreview').textContent = '₱' + price;
   document.getElementById('customPayPrice').textContent = '₱' + price;
   document.getElementById('customPayBtn').disabled = !valid;
@@ -265,7 +266,7 @@ function init() {
 
   document.getElementById('customPayBtn').addEventListener('click', () => {
     const kwh = Number(document.getElementById('customKwhInput').value);
-    if (!Number.isFinite(kwh) || kwh <= 0) {
+    if (!Number.isFinite(kwh) || kwh < 1) {
       return;
     }
     const phoneNumber = document.getElementById('phoneNumber').value.trim();
