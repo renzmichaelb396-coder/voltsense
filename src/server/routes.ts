@@ -24,6 +24,7 @@ import {
 } from '../webhooks/paymongo_types.js';
 import { safeParseWebhookPayload } from '../webhooks/types.js';
 import { safeParseXenditWebhookPayload } from '../webhooks/xendit_types.js';
+import { createRateLimiter } from '../utils/rate-limit.js';
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD' | 'OPTIONS';
 
@@ -45,6 +46,7 @@ export type RequestContext = {
   readonly headers: IncomingHttpHeaders;
   readonly rawBody: string;
   readonly db: SettlementDb;
+  readonly remoteAddress: string;
 };
 
 export type RouteDefinition = {
@@ -469,7 +471,29 @@ class CheckoutPaymentLinkError extends Error {
 }
 
 
+const CHECKOUT_RATE_LIMIT_MAX = 5;
+const CHECKOUT_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const checkCheckoutRateLimit = createRateLimiter(CHECKOUT_RATE_LIMIT_MAX, CHECKOUT_RATE_LIMIT_WINDOW_MS);
+
+function resolveClientIp(ctx: RequestContext): string {
+  const forwardedFor = ctx.headers['x-forwarded-for'];
+  const raw = typeof forwardedFor === 'string' ? forwardedFor : forwardedFor?.[0];
+  const firstHop = raw?.split(',')[0]?.trim();
+  if (firstHop !== undefined && firstHop.length > 0) {
+    return firstHop;
+  }
+  return ctx.remoteAddress;
+}
+
 async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
+  const rateLimitResult = checkCheckoutRateLimit(resolveClientIp(ctx));
+  if (!rateLimitResult.allowed) {
+    return jsonResponse(429, {
+      error: 'too_many_requests',
+      retryAfterMs: rateLimitResult.retryAfterMs,
+    });
+  }
+
   const bodyParsed = CheckoutRequestSchema.safeParse(parseJsonBody(ctx.rawBody));
   if (!bodyParsed.success) {
     return jsonResponse(400, { error: 'invalid_checkout_payload' });

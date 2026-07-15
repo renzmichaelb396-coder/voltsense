@@ -138,6 +138,7 @@ export function createVoltSenseHttpServer(options: HttpServerOptions) {
         headers: req.headers,
         rawBody,
         db: options.db,
+        remoteAddress: req.socket.remoteAddress ?? 'unknown',
       });
 
       // Inject CORS headers on public/host paths so the browser accepts the response.
