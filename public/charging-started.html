@@ -21,6 +21,7 @@
 <div class="icon success"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
 <h2>Charging complete ⚡</h2>
 <p id="completedSummary">Session finished.</p>
+<p id="overstayWarning" style="display:none;margin-top:1.25rem;padding:.75rem 1rem;border-radius:var(--radius);font-size:.82rem;font-weight:600;line-height:1.4"></p>
 </div>
 
 <div class="state" id="expiredState">
@@ -42,6 +43,7 @@
 const API_BASE = 'https://voltsense-pmfq.onrender.com';
 const PENDING_POLL_MS = 3000;
 const CHARGING_POLL_MS = 10000;
+const OVERSTAY_GRACE_MS = 15 * 60 * 1000;
 
 function getParam(name) {
   return new URLSearchParams(window.location.search).get(name);
@@ -64,6 +66,25 @@ function formatEta(minutes) {
   const hrs = Math.floor(minutes / 60);
   const mins = Math.round(minutes % 60);
   return `Est. ${hrs}h ${mins}m remaining`;
+}
+
+// Purely client-side — no server call. Shows the free-unplug grace period
+// immediately, then flips to the overstay-fee warning once it lapses.
+function startOverstayCountdown() {
+  const completedAt = Date.now();
+  const el = document.getElementById('overstayWarning');
+
+  el.style.display = 'block';
+  el.style.color = '#16d39a';
+  el.style.background = 'rgba(22,211,154,.12)';
+  el.textContent = '✅ Please unplug your car. You have 15 minutes free.';
+
+  const msUntilOverstay = completedAt + OVERSTAY_GRACE_MS - Date.now();
+  setTimeout(() => {
+    el.style.color = '#f59e0b';
+    el.style.background = 'rgba(245,158,11,.12)';
+    el.textContent = '⚠️ Overstay fees now apply. Please unplug immediately.';
+  }, msUntilOverstay);
 }
 
 // No hard timeout — this page polls indefinitely until the session reaches a
@@ -99,6 +120,7 @@ function pollStatus(sessionId) {
       showState('completedState');
       document.getElementById('completedSummary').textContent =
         `${(Number(data.kwhDelivered) || 0).toFixed(2)} kWh delivered. Thanks for charging with VoltSense.`;
+      startOverstayCountdown();
       return;
     }
 

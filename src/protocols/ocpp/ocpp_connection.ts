@@ -696,25 +696,68 @@ export class OcppConnection {
           .where(eq(schema.sessions.id, session.id));
 
         const paidPayments = await db
-          .select({ id: schema.payments.id })
+          .select({
+            id: schema.payments.id,
+            psp: schema.payments.psp,
+            externalId: schema.payments.externalId,
+            amountPhp: schema.payments.amountPhp,
+          })
           .from(schema.payments)
           .where(and(eq(schema.payments.sessionId, session.id), eq(schema.payments.status, 'paid')))
           .orderBy(desc(schema.payments.paidAt))
           .limit(1);
 
         const payment = paidPayments[0];
-        if (payment !== undefined) {
+        if (payment === undefined) {
+          console.error(
+            `[voltsense:ocpp] ERROR auto-expired stale payment_cleared session=${session.id} chargePointId=${this.chargePointId} — ` +
+              `paid but charger never connected within 30 min; no paid payment found to flag`,
+          );
+          continue;
+        }
+
+        try {
+          const refundConfig = loadRefundConfigFromEnv();
+          const refundResult = await dispatchRefund(
+            {
+              paymentId: payment.id,
+              psp: payment.psp,
+              externalId: payment.externalId,
+              amountPhp: payment.amountPhp,
+              reason: 'hardware_timeout',
+            },
+            refundConfig,
+          );
+
+          if (refundResult.outcome === 'success') {
+            await db
+              .update(schema.payments)
+              .set({ status: 'refunded', updatedAt: new Date() })
+              .where(eq(schema.payments.id, payment.id));
+            console.error(
+              `[voltsense:ocpp] auto-expired stale payment_cleared session=${session.id} chargePointId=${this.chargePointId} — ` +
+                `paid but charger never connected within 30 min; payment=${payment.id} refunded`,
+            );
+          } else {
+            await db
+              .update(schema.payments)
+              .set({ status: 'refund_failed', updatedAt: new Date() })
+              .where(eq(schema.payments.id, payment.id));
+            console.error(
+              `[voltsense:ocpp] auto-expired stale payment_cleared session=${session.id} chargePointId=${this.chargePointId} — ` +
+                `paid but charger never connected within 30 min; payment=${payment.id} refund FAILED (${refundResult.errorCode}) — manual review needed`,
+            );
+          }
+        } catch (err) {
           await db
             .update(schema.payments)
             .set({ status: 'refund_failed', updatedAt: new Date() })
             .where(eq(schema.payments.id, payment.id));
+          console.error(
+            `[voltsense:ocpp] auto-expired stale payment_cleared session=${session.id} chargePointId=${this.chargePointId} — ` +
+              `refund config/dispatch error: ${err instanceof Error ? err.message : String(err)}; payment=${payment.id} flagged refund_failed`,
+          );
         }
-
-        console.error(
-          `[voltsense:ocpp] ERROR auto-expired stale payment_cleared session=${session.id} chargePointId=${this.chargePointId} — ` +
-            `paid but charger never connected within 30 min` +
-            `${payment !== undefined ? `; payment=${payment.id} flagged refund_failed for manual review` : '; no paid payment found to flag'}`,
-        );
       }
     } catch (err) {
       console.error(

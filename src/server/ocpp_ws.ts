@@ -52,6 +52,7 @@ import {
   type OcppHandshakeCredentials,
 } from '../protocols/ocpp/security_profiles.js';
 import type { RemoteStartTransactionReq } from '../protocols/ocpp/types.js';
+import { dispatchRefund, loadRefundConfigFromEnv } from '../services/refund.js';
 import type { SettlementDb } from '../services/settlement.js';
 
 // OCPP 1.6 subprotocol token offered on the `Sec-WebSocket-Protocol` header.
@@ -349,6 +350,123 @@ async function handleConnection(
   });
 }
 
+// ─── sendCall outcome narrowing ────────────────────────────────────────────────
+// sendCall()'s return type is Promise<unknown> (§1.1.4 — no OCPP CallResult
+// payload is typed), so the 'status' field is narrowed manually here rather
+// than assumed.
+
+function extractRemoteStartStatus(result: unknown): string | undefined {
+  if (typeof result === 'object' && result !== null && 'status' in result) {
+    const status = (result as Record<string, unknown>)['status'];
+    return typeof status === 'string' ? status : undefined;
+  }
+  return undefined;
+}
+
+// ─── RemoteStartTransaction rejection handling ────────────────────────────────
+// The charger is live and explicitly refused to start (status: 'Rejected')
+// even though payment already cleared — unlike the offline case, there is no
+// reconnect to wait for, so refund the customer now and close out the session.
+
+async function handleRemoteStartRejected(chargePointId: string, idTag: string): Promise<void> {
+  if (activeDb === undefined) {
+    return;
+  }
+  const db = activeDb;
+
+  try {
+    const sessionRows = await db
+      .select({ id: schema.sessions.id })
+      .from(schema.sessions)
+      .where(
+        and(
+          eq(schema.sessions.chargePointId, chargePointId),
+          eq(schema.sessions.idTag, idTag),
+          eq(schema.sessions.status, 'payment_cleared'),
+        ),
+      )
+      .orderBy(desc(schema.sessions.paymentClearedAt))
+      .limit(1);
+
+    const session = sessionRows[0];
+    if (session === undefined) {
+      console.error(
+        `[voltsense:ocpp] RemoteStartTransaction rejected — no payment_cleared session found to refund: chargePointId=${chargePointId} idTag=${idTag}`,
+      );
+      return;
+    }
+
+    const paymentRows = await db
+      .select({
+        id: schema.payments.id,
+        psp: schema.payments.psp,
+        externalId: schema.payments.externalId,
+        amountPhp: schema.payments.amountPhp,
+      })
+      .from(schema.payments)
+      .where(and(eq(schema.payments.sessionId, session.id), eq(schema.payments.status, 'paid')))
+      .orderBy(desc(schema.payments.paidAt))
+      .limit(1);
+
+    const payment = paymentRows[0];
+    if (payment === undefined) {
+      console.error(
+        `[voltsense:ocpp] RemoteStartTransaction rejected — session=${session.id} has no paid payment to refund: chargePointId=${chargePointId} idTag=${idTag}`,
+      );
+      return;
+    }
+
+    try {
+      const refundConfig = loadRefundConfigFromEnv();
+      const refundResult = await dispatchRefund(
+        {
+          paymentId: payment.id,
+          psp: payment.psp,
+          externalId: payment.externalId,
+          amountPhp: payment.amountPhp,
+          reason: 'hardware_timeout',
+        },
+        refundConfig,
+      );
+
+      if (refundResult.outcome === 'success') {
+        await db
+          .update(schema.payments)
+          .set({ status: 'refunded', updatedAt: new Date() })
+          .where(eq(schema.payments.id, payment.id));
+        console.log(
+          `[voltsense:ocpp] RemoteStartTransaction rejected — refunded payment=${payment.id} session=${session.id} chargePointId=${chargePointId}`,
+        );
+      } else {
+        await db
+          .update(schema.payments)
+          .set({ status: 'refund_failed', updatedAt: new Date() })
+          .where(eq(schema.payments.id, payment.id));
+        console.error(
+          `[voltsense:ocpp] RemoteStartTransaction rejected — refund FAILED (${refundResult.errorCode}) payment=${payment.id} session=${session.id} chargePointId=${chargePointId} — manual review needed`,
+        );
+      }
+    } catch (err) {
+      await db
+        .update(schema.payments)
+        .set({ status: 'refund_failed', updatedAt: new Date() })
+        .where(eq(schema.payments.id, payment.id));
+      console.error(
+        `[voltsense:ocpp] RemoteStartTransaction rejected — refund dispatch error payment=${payment.id} session=${session.id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    await db
+      .update(schema.sessions)
+      .set({ status: 'expired', updatedAt: new Date() })
+      .where(eq(schema.sessions.id, session.id));
+  } catch (err) {
+    console.error(
+      `[voltsense:ocpp] failed to handle RemoteStartTransaction rejection chargePointId=${chargePointId} idTag=${idTag}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 // ─── Outbound RemoteStartTransaction ───────────────────────────────────────────
 // Called once a session's payment clears (handlePayMongoWebhook). Looks up the
 // charge point's live connection and sends the real OCPP Call; never throws —
@@ -375,6 +493,12 @@ export async function sendRemoteStartTransaction(
     console.log(
       `[voltsense:ocpp] RemoteStartTransaction.conf chargePointId=${chargePointId} connectorId=${connectorId} idTag=${idTag} result=${JSON.stringify(result)}`,
     );
+    if (extractRemoteStartStatus(result) === 'Rejected') {
+      console.error(
+        `[voltsense:ocpp] RemoteStartTransaction REJECTED by charge point chargePointId=${chargePointId} connectorId=${connectorId} idTag=${idTag}`,
+      );
+      await handleRemoteStartRejected(chargePointId, idTag);
+    }
   } catch (err) {
     console.error(
       `[voltsense:ocpp] RemoteStartTransaction failed chargePointId=${chargePointId}: ${err instanceof Error ? err.message : JSON.stringify(err)}`,
