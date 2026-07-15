@@ -29,10 +29,15 @@ const CORS_HEADERS: Readonly<Record<string, string>> = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-// /host/earnings carries a Basic Auth Authorization header the host enters manually,
-// so it needs 'Authorization' in Allow-Headers, and — since it's earnings data —
-// a scoped origin rather than the wildcard used by the other public paths above.
-const HOST_EARNINGS_PATH = '/host/earnings';
+// These endpoints carry a Basic Auth Authorization header entered by a human
+// (host/admin dashboards), so they need 'Authorization' in Allow-Headers, and —
+// since it's earnings/session data — a scoped origin rather than the wildcard
+// used by the other public paths above.
+const AUTH_SCOPED_CORS_PATHS: ReadonlySet<string> = new Set([
+  '/host/earnings',
+  '/admin/earnings',
+  '/admin/sessions',
+]);
 
 const HOST_CORS_HEADERS: Readonly<Record<string, string>> = {
   'Access-Control-Allow-Origin': 'https://voltsense-csms.vercel.app',
@@ -114,7 +119,7 @@ export function createVoltSenseHttpServer(options: HttpServerOptions) {
       const pathname = requestUrl.pathname;
 
       // Handle CORS preflight for public browser-facing endpoints.
-      if (method === 'OPTIONS' && pathname === HOST_EARNINGS_PATH) {
+      if (method === 'OPTIONS' && AUTH_SCOPED_CORS_PATHS.has(pathname)) {
         res.writeHead(204, HOST_CORS_HEADERS);
         res.end();
         return;
@@ -143,7 +148,7 @@ export function createVoltSenseHttpServer(options: HttpServerOptions) {
 
       // Inject CORS headers on public/host paths so the browser accepts the response.
       const finalResponse =
-        pathname === HOST_EARNINGS_PATH
+        AUTH_SCOPED_CORS_PATHS.has(pathname)
           ? { ...response, headers: { ...response.headers, ...HOST_CORS_HEADERS } }
           : CORS_PUBLIC_PATHS.has(pathname)
             ? { ...response, headers: { ...response.headers, ...CORS_HEADERS } }
