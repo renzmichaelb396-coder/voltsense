@@ -426,7 +426,18 @@ function init() {
     showConfirmModal('Smart Fill', kwh, price, [cpid, cid, 'PKG_CUSTOM', phoneNumber, kwh]);
   });
 
-  document.getElementById('carSelect').addEventListener('change', () => { updateBatteryHints(); applyPackagesDisabledState(); });
+  document.getElementById('carSelect').addEventListener('change', () => {
+    updateBatteryHints();
+    applyPackagesDisabledState();
+    if (document.getElementById('carSelect').value === 'other') {
+      const expand = document.getElementById('customExpand');
+      if (expand.hidden) {
+        expand.hidden = false;
+        autofillCustomKwh();
+        updateCustomPricePreview();
+      }
+    }
+  });
   document.getElementById('currentBatteryPct').addEventListener('input', () => { updateBatteryHints(); applyPackagesDisabledState(); });
   document.getElementById('targetBatteryPct').addEventListener('input', updateBatteryHints);
 
