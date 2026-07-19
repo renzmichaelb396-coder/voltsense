@@ -69,13 +69,29 @@ Context loaded. Open deficiencies listed. Ready to work.
 - Platform vault: `00000000-0000-0000-0000-000000000001`
 - ⚠️ Configure B26471 OCPPSetTool to connect via serial: `wss://voltsense-pmfq.onrender.com/ocpp/VS-MAN-001`
 
-### PayMongo
-- Webhook ID: hook_WxM9WgwBmf6t9cCnWwzLj1ff (test mode, payment.paid + payment.failed)
-- GCash/Maya: submitted 2026-07-01, approval pending — watch renzmichaelb396@gmail.com
-- On approval: swap sk_test_→sk_live_, register live webhook, update PAYMONGO_WEBHOOK_SECRET in Render
+### PayMongo — LIVE MODE (switched 2026-07-15)
+- ⚠️ LIVE MODE ACTIVE — sk_live_ keys in Render, real customer money
+- Live webhook ID: registered pointing to https://voltsense-pmfq.onrender.com/webhooks/paymongo
+- Payment methods: qrph, gcash, paymaya, card, grab_pay
+- GCash/Maya: APPROVED under QRPH (July 13, 2026)
+- BPI settlement account added: 009763-0453-09, CIVICGRID SOFTWARE DEVELOPMENT SERVICES (Payouts → Saved Recipients)
+- ⚠️ ROTATE KEYS — sk_live_ and whsk_ were pasted in chat history. Rotate in PayMongo dashboard before real guests arrive.
+- statement_descriptor: 'VoltSense EV' added to checkout payload
 
-### Commits (2026-07-04 → 2026-07-05)
-4a4533b → a335ea8 → 141a6eb → 524265f → a271222 → 7973b62 → 5d348f0 → b480a72 → 60c12e2 → **15c4ee6**
+### Commits (2026-07-04 → 2026-07-15)
+4a4533b → … → 15c4ee6 → b5ff43d → ef08ec0 → 8cd3642 → 9727d4b → 2ac4854 → **9727d4b**
+Key commits this session:
+- b5ff43d — add QRPh payment method
+- ef08ec0 — statement_descriptor + live key deploy
+- 8cd3642 — UX polish: best value ribbon, battery hints, iOS zoom
+- 9727d4b — bold battery hints (Battery reaches X%)
+
+### Full Session — REMOVED (2026-07-15, pending execution)
+⚠️ Full Session (₱500 flat, unlimited kWh) is a money-losing product:
+- Breakeven: 17.24 kWh. Any session >17.24 kWh loses money.
+- 22kW charger = 22 kWh/hr. Every 1-hour session loses money.
+- REPLACEMENT: Smart Fill (calculates exact kWh from car + battery %, sends as PKG_CUSTOM)
+- Goal prompt generated — run in Claude Code to execute the removal.
 
 ### DB Schema — sessions table additions (2026-07-05)
 - `ocpp_transaction_id integer` — applied manually via Supabase SQL editor (IF NOT EXISTS). Persists CSMS transactionId so StopTransaction settlement survives Render restarts. No drizzle-kit migrate in this repo — all migrations via Supabase SQL editor directly.
