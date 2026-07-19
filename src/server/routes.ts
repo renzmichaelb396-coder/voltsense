@@ -341,7 +341,7 @@ const CreatePaymentRequestSchema = z
       throw new Error('[voltsense:create-payment] session_id and amount_php are required');
     }
     const reference_number = data.reference_number ?? data.referenceNumber ?? randomUUID();
-    const description = data.description ?? `VoltSense session payment (${session_id})`;
+    const description = data.description ?? `Evion session payment (${session_id})`;
     return {
       session_id,
       amount_php,
@@ -662,7 +662,7 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
         {
           amountPhp: computedAmountPhp,
           referenceNumber: session.id,
-          description: `VoltSense charging session — ${site.name}`,
+          description: `Evion charging session — ${site.name}`,
           successUrl: `https://voltsense-csms.vercel.app/charging-started.html?session=${session.id}`,
           cancelUrl: `https://voltsense-csms.vercel.app/payment-cancelled.html?cpid=${chargePointId}&cid=${connectorId}`,
         },

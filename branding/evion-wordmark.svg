@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 120" width="520" height="120">
+  <defs>
+    <style>
+      .brand { font-family: 'Arial Black', 'Helvetica Neue', Arial, sans-serif; font-weight: 900; }
+      .tag   { font-family: 'Arial', 'Helvetica Neue', Arial, sans-serif; font-weight: 400; letter-spacing: 0.25em; }
+    </style>
+  </defs>
+
+  <!-- Background: transparent (white for preview) -->
+  <rect width="520" height="120" fill="#0a0e1a"/>
+
+  <!-- EVION wordmark — E V I replaced by bolt, O = charging ring, N -->
+  <!-- E -->
+  <rect x="30"  y="18" width="12" height="84" fill="#16d39a"/>
+  <rect x="30"  y="18" width="52" height="12" fill="#16d39a"/>
+  <rect x="30"  y="54" width="42" height="11" fill="#16d39a"/>
+  <rect x="30"  y="90" width="52" height="12" fill="#16d39a"/>
+
+  <!-- V -->
+  <polygon points="100,18 118,18 138,90 128,90 109,30 90,90 80,90" fill="#16d39a"/>
+  <!-- V right leg -->
+  <polygon points="118,18 136,18 156,90 146,90" fill="#16d39a"/>
+
+  <!-- I with lightning bolt replacing the stem -->
+  <!-- Top bar -->
+  <rect x="172" y="18" width="36" height="11" fill="#16d39a"/>
+  <!-- Bottom bar -->
+  <rect x="172" y="91" width="36" height="11" fill="#16d39a"/>
+  <!-- Lightning bolt as stem -->
+  <polygon points="197,29 183,62 194,62 183,102 207,62 196,62 207,29" fill="#16d39a"/>
+
+  <!-- O = circular charging port ring -->
+  <circle cx="264" cy="60" r="38" fill="none" stroke="#16d39a" stroke-width="12"/>
+  <!-- inner tick marks like a charging port -->
+  <circle cx="264" cy="60" r="18" fill="none" stroke="#16d39a" stroke-width="4"/>
+  <!-- 4 small connector pins -->
+  <rect x="261" y="38" width="6" height="8" rx="2" fill="#16d39a"/>
+  <rect x="261" y="74" width="6" height="8" rx="2" fill="#16d39a"/>
+  <rect x="243" y="57" width="8" height="6" rx="2" fill="#16d39a"/>
+  <rect x="277" y="57" width="8" height="6" rx="2" fill="#16d39a"/>
+
+  <!-- N -->
+  <rect x="320" y="18" width="12" height="84" fill="#16d39a"/>
+  <rect x="460" y="18" width="12" height="84" fill="#16d39a"/>
+  <polygon points="332,18 344,18 472,90 460,90" fill="#16d39a"/>
+
+  <!-- Tagline -->
+  <text x="30" y="115" class="tag" font-size="9" fill="#16d39a" opacity="0.6">EV CHARGING NETWORK · PHILIPPINES</text>
+</svg>

@@ -211,20 +211,51 @@ export async function executeRevenueSplit(
     // net_collect = energy_charge − psp_fee — amount entering the split pool (§1.4.4)
     const netCollectDec = energyChargeDec.minus(pspFeeDec);
 
+    // ── Step 4b: Cap at what PayMongo actually collected (sampling-gap overage) ──
+    // MeterValues sampling can lag the enforced kWh cutoff, so kwh × tariff
+    // occasionally computes an energy_charge above payment.amountPhp. Scale every
+    // split component by the same factor so host_share + platform_share_net +
+    // psp_fee never exceeds the collected amount — the excess kWh is real energy
+    // delivered but is not monetized to host/platform. Scaling uniformly preserves
+    // the invariant identity exactly (it held for the unscaled values by construction).
+
+    let energyChargeFinalDec = energyChargeDec;
+    let pspFeeFinalDec = pspFeeDec;
+    let hostShareFinalDec = hostShareDec;
+    let platformShareNetFinalDec = platformShareNetDec;
+    let duReserveFinalDec = duReserveDec;
+    let netCollectFinalDec = netCollectDec;
+
+    if (energyChargeDec.greaterThan(totalDec)) {
+      const capScale = totalDec.dividedBy(energyChargeDec);
+      energyChargeFinalDec = totalDec;
+      pspFeeFinalDec = pspFeeDec.times(capScale);
+      hostShareFinalDec = hostShareDec.times(capScale);
+      platformShareNetFinalDec = platformShareNetDec.times(capScale);
+      duReserveFinalDec = duReserveDec.times(capScale);
+      netCollectFinalDec = netCollectDec.times(capScale);
+
+      console.warn(
+        `[voltsense:settle] SETTLEMENT CAP TRIGGERED session=${session.id} ` +
+        `kwhEnergyCharge=${energyChargeDec.toFixed(6)} exceeds collected=${totalDec.toFixed(6)} — ` +
+        `capped split to collected amount, excess kWh not monetized`,
+      );
+    }
+
     // ── Step 5: Unconditional settlement invariant assert (§1.4.4) ──────────────
     // host_share + platform_share_net + psp_fee = energy_charge holds exactly in
     // Decimal.js because no intermediate rounding has been applied yet.
     // Throws inside the transaction — any violation triggers full rollback.
 
-    assertSettlementInvariant(hostShareDec, platformShareNetDec, pspFeeDec, energyChargeDec);
+    assertSettlementInvariant(hostShareFinalDec, platformShareNetFinalDec, pspFeeFinalDec, energyChargeFinalDec);
 
     // Round all values to 6 decimal places for DB storage (NUMERIC(18,6))
-    const energyChargePhp = energyChargeDec.toDecimalPlaces(6).toFixed(6);
-    const pspFeePhp = pspFeeDec.toDecimalPlaces(6).toFixed(6);
-    const netCollectPhp = netCollectDec.toDecimalPlaces(6).toFixed(6);
-    const hostSharePhp = hostShareDec.toDecimalPlaces(6).toFixed(6);
-    const platformSharePhp = platformShareNetDec.toDecimalPlaces(6).toFixed(6);
-    const duReservePhp = duReserveDec.toDecimalPlaces(6).toFixed(6);
+    const energyChargePhp = energyChargeFinalDec.toDecimalPlaces(6).toFixed(6);
+    const pspFeePhp = pspFeeFinalDec.toDecimalPlaces(6).toFixed(6);
+    const netCollectPhp = netCollectFinalDec.toDecimalPlaces(6).toFixed(6);
+    const hostSharePhp = hostShareFinalDec.toDecimalPlaces(6).toFixed(6);
+    const platformSharePhp = platformShareNetFinalDec.toDecimalPlaces(6).toFixed(6);
+    const duReservePhp = duReserveFinalDec.toDecimalPlaces(6).toFixed(6);
 
     // Host account ID: in v1 the stationId (siteId) is used as the host account key.
     // Production: replace with a lookup against a host_accounts table.

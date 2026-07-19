@@ -114,7 +114,7 @@ export async function createCheckoutSession(
   const amountCentavos = phpStringToCentavos(req.amountPhp);
 
   const attributes: Record<string, unknown> = {
-    billing: { name: 'VoltSense Customer' },
+    billing: { name: 'Evion Customer' },
     line_items: [
       {
         currency: 'PHP',
@@ -127,7 +127,7 @@ export async function createCheckoutSession(
     success_url: req.successUrl,
     cancel_url: req.cancelUrl,
     description: req.description,
-    statement_descriptor: 'VoltSense EV',
+    statement_descriptor: 'Evion',
   };
 
   if (req.referenceNumber !== undefined) {
