@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eVion Logo</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@900&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #060a12;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+  }
+
+  .logo-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+    padding: 60px 80px;
+  }
+
+  .wordmark {
+    display: flex;
+    align-items: center;
+    gap: 0px;
+    line-height: 1;
+  }
+
+  .letters {
+    font-family: 'Orbitron', 'Arial Black', monospace;
+    font-weight: 900;
+    font-size: 128px;
+    color: transparent;
+    -webkit-text-stroke: 2.5px #16d39a;
+    text-shadow:
+      0 0 8px  #16d39a,
+      0 0 18px #16d39a,
+      0 0 38px #16d39a,
+      0 0 70px #0ea5e9;
+    letter-spacing: 4px;
+    line-height: 1;
+    user-select: none;
+  }
+
+  /* Power-button O */
+  .power-o {
+    width: 118px;
+    height: 128px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    margin: 0 2px;
+    filter:
+      drop-shadow(0 0 6px #16d39a)
+      drop-shadow(0 0 14px #16d39a)
+      drop-shadow(0 0 28px #0ea5e9);
+  }
+
+  /* Tagline */
+  .tagline {
+    font-family: 'Orbitron', 'Arial', monospace;
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: 8px;
+    color: #16d39a;
+    opacity: 0.5;
+    text-shadow: 0 0 8px #16d39a;
+    text-transform: uppercase;
+  }
+
+  .divider {
+    width: 320px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #16d39a55, transparent);
+  }
+</style>
+</head>
+<body>
+<div class="logo-wrap">
+
+  <div class="wordmark">
+    <!-- eVi -->
+    <span class="letters">eVi</span>
+
+    <!-- Power button O -->
+    <div class="power-o">
+      <svg viewBox="0 0 110 120" width="110" height="120" xmlns="http://www.w3.org/2000/svg">
+        <!-- Broken arc — power ring -->
+        <path
+          d="M 55 22 A 38 38 0 1 1 54.99 22"
+          fill="none"
+          stroke="#16d39a"
+          stroke-width="9"
+          stroke-linecap="round"
+          stroke-dasharray="200 34"
+          stroke-dashoffset="-17"
+        />
+        <!-- Vertical power stem -->
+        <line x1="55" y1="8" x2="55" y2="44"
+          stroke="#16d39a"
+          stroke-width="9"
+          stroke-linecap="round"
+        />
+      </svg>
+    </div>
+
+    <!-- n -->
+    <span class="letters">n</span>
+  </div>
+
+  <div class="divider"></div>
+  <div class="tagline">EV Charging Network &nbsp;·&nbsp; Philippines</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+
+  <!-- Background -->
+  <rect width="200" height="200" fill="#0a0e1a"/>
+
+  <!-- Outer hexagon -->
+  <polygon
+    points="100,8 178,52 178,148 100,192 22,148 22,52"
+    fill="none"
+    stroke="#16d39a"
+    stroke-width="6"
+  />
+
+  <!-- Inner hexagon (thinner ring) -->
+  <polygon
+    points="100,26 162,62 162,138 100,174 38,138 38,62"
+    fill="none"
+    stroke="#16d39a"
+    stroke-width="2.5"
+    opacity="0.45"
+  />
+
+  <!-- Orbital ring -->
+  <ellipse cx="100" cy="100" rx="52" ry="52" fill="none" stroke="#16d39a" stroke-width="3" opacity="0.5"/>
+
+  <!-- Lightning bolt centered -->
+  <polygon
+    points="113,42 82,106 100,106 87,158 118,94 100,94"
+    fill="#16d39a"
+  />
+
+</svg>
