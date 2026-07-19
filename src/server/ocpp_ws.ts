@@ -58,6 +58,12 @@ import type { SettlementDb } from '../services/settlement.js';
 // OCPP 1.6 subprotocol token offered on the `Sec-WebSocket-Protocol` header.
 const OCPP_SUBPROTOCOL = 'ocpp1.6' as const;
 
+// TEMPORARY single-tenant pilot shim — BESEN firmware may connect to bare /ocpp
+// (no serial-number path segment). Route to the one registered Mandaluyong pilot
+// charger (VS-MAN-001 / 33333333-3333-3333-3333-333333333333). Remove before
+// onboarding a second charger; bare-path routing is ambiguous with multiple CPs.
+const PILOT_BARE_PATH_CHARGE_POINT_SERIAL = 'VS-MAN-001' as const;
+
 // ─── Bench-mode description (exhaustive over the union) ──────────────────────
 
 function describeBenchMode(state: HardwareTestState): string {
@@ -149,9 +155,25 @@ function rawDataToText(data: RawData): string {
 // ─── chargePointId extraction ─────────────────────────────────────────────────
 // OCPP 1.6J convention: the charge point identity is the last path segment of
 // the WebSocket URL, e.g. wss://host/ocpp/{chargePointId}.
+// Pilot exception: bare /ocpp or /ocpp/ (no segment) falls back to
+// PILOT_BARE_PATH_CHARGE_POINT_SERIAL — see constant above.
+
+function isBareOcppPath(pathname: string): boolean {
+  const normalized =
+    pathname.endsWith('/') && pathname.length > 1 ? pathname.slice(0, -1) : pathname;
+  return normalized === '/ocpp';
+}
+
+function isOcppUpgradePath(url: string): boolean {
+  const pathname = new URL(url, 'http://internal').pathname;
+  return isBareOcppPath(pathname) || pathname.startsWith('/ocpp/');
+}
 
 function extractChargePointId(req: IncomingMessage): string | null {
   const url = new URL(req.url ?? '/', 'http://internal');
+  if (isBareOcppPath(url.pathname)) {
+    return PILOT_BARE_PATH_CHARGE_POINT_SERIAL;
+  }
   const segments = url.pathname.split('/').filter((segment) => segment.length > 0);
   const last = segments[segments.length - 1];
   return last !== undefined && last.length > 0 ? decodeURIComponent(last) : null;
@@ -557,8 +579,10 @@ export async function startOcppWsListener(
       console.log(
         `[voltsense:ocpp] WS upgrade attempt — peer=${peer} url=${url} subprotocol=${proto} hasAuth=${String(hasAuth)}`,
       );
-      if (!url.startsWith('/ocpp/')) {
-        console.log(`[voltsense:ocpp] WS upgrade rejected — path does not start with /ocpp/`);
+      if (!isOcppUpgradePath(url)) {
+        console.log(
+          `[voltsense:ocpp] WS upgrade rejected — path is not /ocpp, /ocpp/, or /ocpp/{chargePointId}`,
+        );
         socket.destroy();
         return;
       }
@@ -615,7 +639,11 @@ export async function startOcppWsListener(
       return;
     }
 
-    console.log(`[voltsense:ocpp] charge point ${urlSegment} connected from ${peer}`);
+    const barePathFallback =
+      isBareOcppPath(new URL(request.url ?? '/', 'http://internal').pathname);
+    console.log(
+      `[voltsense:ocpp] charge point ${urlSegment} connected from ${peer}${barePathFallback ? ' (pilot bare /ocpp fallback)' : ''}`,
+    );
 
     void handleConnection(socket, urlSegment, db).catch((error: unknown) => {
       console.error(
