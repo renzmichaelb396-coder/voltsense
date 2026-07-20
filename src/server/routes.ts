@@ -499,6 +499,31 @@ function resolveClientIp(ctx: RequestContext): string {
   return ctx.remoteAddress;
 }
 
+// Thrown inside the checkout transaction when a concurrent request already
+// claimed this connector between the pre-transaction availability read and
+// the transactional insert — closes the T24 double-booking race, where two
+// simultaneous checkouts could both pass the earlier `connector.status ===
+// 'Available'` check before either session row existed.
+class CheckoutConnectorClaimedError extends Error {
+  constructor() {
+    super('Connector already claimed by another in-flight or active session');
+    this.name = 'CheckoutConnectorClaimedError';
+  }
+}
+
+// Session statuses that occupy a connector regardless of auth-window expiry.
+// 'awaiting_payment' is handled separately — it only blocks while unexpired,
+// since an abandoned checkout must free the connector once its 15-minute
+// authExpiresAt window passes (no expiry sweep exists yet — see CLAUDE.md
+// "Known Gaps" — so this is evaluated live against `now()` at claim time).
+const CONNECTOR_BLOCKING_STATUSES = [
+  'payment_cleared',
+  'authorized',
+  'charging',
+  'lost_transaction',
+  'paid_charger_offline',
+] as const;
+
 async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
   const rateLimitResult = checkCheckoutRateLimit(resolveClientIp(ctx));
   if (!rateLimitResult.allowed) {
@@ -633,6 +658,34 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
   let checkoutResult: { sessionId: string; checkoutUrl: string };
   try {
     checkoutResult = await ctx.db.transaction(async (tx) => {
+      // Lock the connector row for the duration of this transaction so a
+      // concurrent checkout on the same connector blocks here instead of
+      // racing past the availability check (T24 double-booking fix).
+      await tx
+        .select({ id: schema.connectors.id })
+        .from(schema.connectors)
+        .where(eq(schema.connectors.id, connector.id))
+        .for('update');
+
+      const blockingSessions = await tx
+        .select({ id: schema.sessions.id })
+        .from(schema.sessions)
+        .where(
+          and(
+            eq(schema.sessions.chargePointId, chargePointId),
+            eq(schema.sessions.connectorId, connectorId),
+            or(
+              inArray(schema.sessions.status, [...CONNECTOR_BLOCKING_STATUSES]),
+              and(eq(schema.sessions.status, 'awaiting_payment'), gt(schema.sessions.authExpiresAt, new Date())),
+            ),
+          ),
+        )
+        .limit(1);
+
+      if (blockingSessions[0] !== undefined) {
+        throw new CheckoutConnectorClaimedError();
+      }
+
       const insertedSessions = await tx
         .insert(schema.sessions)
         .values({
@@ -691,6 +744,12 @@ async function handleCheckout(ctx: RequestContext): Promise<HttpResponse> {
         error: 'paymongo_link_creation_failed',
         code: err.code,
         message: err.message,
+      });
+    }
+    if (err instanceof CheckoutConnectorClaimedError) {
+      return jsonResponse(409, {
+        error: 'connector_not_available',
+        message: 'This connector is currently in use.',
       });
     }
     throw err;
